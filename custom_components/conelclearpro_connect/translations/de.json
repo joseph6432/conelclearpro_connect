@@ -22,7 +22,7 @@
           "model": "Gerätemodell"
         },
         "description": "Geben Sie Modell und Hostname/IP für den lokalen Zugriff ein",
-        "title": "SYR Connect (Lokal)"
+        "title": "ConelClearPro API Connect (Lokal)"
       },
       "api_xml": {
         "data": {
@@ -31,7 +31,7 @@
           "username": "Benutzername"
         },
         "description": "Geben Sie Ihre App-Anmeldedaten für den Cloud-Zugriff ein",
-        "title": "SYR Connect (Cloud)"
+        "title": "ConelClearPro API Connect (Cloud)"
       },
       "reauth_confirm": {
         "data": {
@@ -39,7 +39,7 @@
           "username": "Benutzername"
         },
         "description": "Die Anmeldedaten für {username} sind nicht mehr gültig. Bitte geben Sie neue Anmeldedaten ein.",
-        "title": "SYR Connect erneut authentifizieren"
+        "title": "ConelClearPro API Connect erneut authentifizieren"
       },
       "reconfigure": {
         "data": {
@@ -50,15 +50,15 @@
           "username": "Benutzername"
         },
         "description": "Aktualisieren Sie Ihre Einstellungen.",
-        "title": "SYR Connect neu konfigurieren"
+        "title": "ConelClearPro API Connect neu konfigurieren"
       },
       "user": {
-        "description": "Wählen Sie, wie Sie sich mit Ihrem SYR-Gerät verbinden möchten:\n\n- **Cloud-Zugriff**: Verwenden Sie Ihre App-Anmeldedaten, um über den SYR-Cloud-Dienst auf alle Ihre Geräte zuzugreifen. Dies benötigt eine Internetverbindung.\n\n- **Lokaler Zugriff**: Verbinden Sie sich direkt mit einem Gerät in Ihrem lokalen Netzwerk über dessen IP-Adresse. Dies funktioniert offline und bietet schnellere Reaktionszeiten.",
+        "description": "Wählen Sie, wie Sie sich mit Ihrem ConelClearPro-Gerät verbinden möchten:\n\n- **Cloud-Zugriff**: Verwenden Sie Ihre App-Anmeldedaten, um über den SYR-Cloud-Dienst auf alle Ihre Geräte zuzugreifen. Dies benötigt eine Internetverbindung.\n\n- **Lokaler Zugriff**: Verbinden Sie sich direkt mit einem Gerät in Ihrem lokalen Netzwerk über dessen IP-Adresse. Dies funktioniert offline und bietet schnellere Reaktionszeiten.",
         "menu_options": {
           "api_json": "Lokaler-Zugriff",
           "api_xml": "Cloud-Zugriff"
         },
-        "title": "SYR Connect"
+        "title": "ConelClearPro API Connect"
       }
     }
   },
@@ -1508,7 +1508,7 @@
   },
   "issues": {
     "device_offline": {
-      "description": "Das SYR Connect Gerät \"{device_name}\" ist derzeit offline und kann nicht erreicht werden. Bitte überprüfen Sie:\n\n- Stromversorgung des Geräts\n- Netzwerkverbindung\n- SYR Connect Cloud-Dienst Status\n\nDas Gerät wird automatisch wieder verbunden, sobald es online ist.",
+      "description": "Das ConelClearPro API Connect Gerät \"{device_name}\" ist derzeit offline und kann nicht erreicht werden. Bitte überprüfen Sie:\n\n- Stromversorgung des Geräts\n- Netzwerkverbindung\n- ConelClearPro API Connect Cloud-Dienst Status\n\nDas Gerät wird automatisch wieder verbunden, sobald es online ist.",
       "title": "Gerät offline: {device_name}"
     }
   },
@@ -1519,7 +1519,7 @@
           "scan_interval": "Aktualisierungsintervall"
         },
         "description": "Definiert den Zeitabstand zwischen API-Aufrufen.",
-        "title": "SYR Connect Optionen"
+        "title": "ConelClearPro API Connect Optionen"
       }
     }
   }
