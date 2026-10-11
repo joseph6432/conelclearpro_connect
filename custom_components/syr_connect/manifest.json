@@ -1,15 +1,15 @@
 {
-  "domain": "syr_connect",
-  "name": "SYR Connect",
+  "domain": "conelclearpro_connect",
+  "name": "ConelClearPro Connect",
   "codeowners": [
-    "@alexhass"
+    "@joseph6432"
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/alexhass/syr_connect",
+  "documentation": "https://github.com/joseph6432/conelclearpro_connect/",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/alexhass/syr_connect/issues",
+  "issue_tracker": "hhttps://github.com/joseph6432/conelclearpro_connect/issues",
   "loggers": [
     "custom_components.syr_connect"
   ],
@@ -18,5 +18,5 @@
     "pycryptodomex>=3.19.0,<4.0",
     "defusedxml>=0.7.1,<1.0"
   ],
-  "version": "1.28.0"
+  "version": "1.29.0"
 }
