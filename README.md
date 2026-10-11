@@ -532,3 +532,4 @@ MIT License - see LICENSE file
 
 - Inspired by [ioBroker.syrconnectapp](https://github.com/TA2k/ioBroker.syrconnectapp) adapter from TA2k.
 - Many thanks to SYR IoT-Development-Team for sharing the logos.
+- this is a fork of https://github.com/alexhass/syr_connect -- many Thanks to his effort on this project!
