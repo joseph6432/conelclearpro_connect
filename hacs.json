@@ -2,5 +2,6 @@
   "content_in_root": false,
   "name": "ConelClear Pro Connect (joseph6432)",
   "documentation": "https://github.com/joseph6432/conelclearpro_connect",
-  "issues": "https://github.com/joseph6432/conelclearpro_connect/issues"
+  "issues": "https://github.com/joseph6432/conelclearpro_connect/issues",
+  "icon": "mdi:water-opacity"
 }
