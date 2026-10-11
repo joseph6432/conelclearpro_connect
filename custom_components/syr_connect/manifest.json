@@ -9,7 +9,7 @@
   "documentation": "https://github.com/joseph6432/conelclearpro_connect/",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "issue_tracker": "hhttps://github.com/joseph6432/conelclearpro_connect/issues",
+  "issue_tracker": "https://github.com/joseph6432/conelclearpro_connect/issues",
   "loggers": [
     "custom_components.conelclearpro"
   ],
