@@ -15,7 +15,7 @@ from homeassistant.const import (
     UnitOfVolumeFlowRate,
 )
 
-DOMAIN = "syr_connect"
+DOMAIN = "conelclearpro_connect"
 
 # Configuration keys
 CONF_API_TYPE = "api_type"
