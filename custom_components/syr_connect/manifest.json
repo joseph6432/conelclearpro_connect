@@ -9,7 +9,7 @@
   "documentation": "https://github.com/joseph6432/conelclearpro_connect/",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "icon": "mdi:water-opacity"
+  "icon": "mdi:water-opacity",
   "issue_tracker": "https://github.com/joseph6432/conelclearpro_connect/issues",
   "loggers": [
     "custom_components.conelclearpro_connect"
