@@ -1,4 +1,7 @@
 {
   "content_in_root": false,
-  "name": "SYR Connect (joseph6432)"
+  "name": "SYR Connect (joseph6432)",
+  "homeassistant": "2024.1.0",
+  "documentation": "https://github.com/joseph6432/syr_connect",
+  "issues": "https://github.com/joseph6432/syr_connect/issues"
 }
