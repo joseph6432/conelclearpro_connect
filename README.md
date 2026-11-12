@@ -10,14 +10,14 @@ Many thanks for his afford!
 
 # SYR Connect - Home Assistant Integration
 
-[![GitHub Release](https://img.shields.io/github/release/alexhass/syr_connect.svg?style=flat)](https://github.com/alexhass/syr_connect/releases)
-[![syr_connect installs](https://img.shields.io/badge/dynamic/json?logo=home-assistant&logoColor=ccc&label=usage&suffix=%20installs&cacheSeconds=15600&url=https://analytics.home-assistant.io/custom_integrations.json&query=$.syr_connect.total)](https://my.home-assistant.io/redirect/config_flow_start/?domain=syr_connect)
-[![Quality scale: Platinum](https://img.shields.io/badge/Quality%20scale-Platinum%20%F0%9F%8F%86-b5d2e0?style=flat)](https://github.com/alexhass/syr_connect/blob/main/quality_scale.yaml)
+[![GitHub Release](https://img.shields.io/github/release/joseph6432/conelclearpro_connect.svg?style=flat)](https://github.com/joseph6432/conelclearpro_connect/releases)
+[![syr_connect installs](https://img.shields.io/badge/dynamic/json?logo=home-assistant&logoColor=ccc&label=usage&suffix=%20installs&cacheSeconds=15600&url=https://analytics.home-assistant.io/custom_integrations.json&query=$.syr_connect.total)](https://my.home-assistant.io/redirect/config_flow_start/?domain=conelclearpro_connect)
+[![Quality scale: Platinum](https://img.shields.io/badge/Quality%20scale-Platinum%20%F0%9F%8F%86-b5d2e0?style=flat)](https://github.com/joseph6432/conelclearpro_connect/blob/main/quality_scale.yaml)
 
-[![hassfest](https://github.com/alexhass/syr_connect/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/alexhass/syr_connect/actions/workflows/hassfest.yaml)
-[![HACS](https://github.com/alexhass/syr_connect/actions/workflows/hacs.yaml/badge.svg)](https://github.com/alexhass/syr_connect/actions/workflows/hacs.yaml)
-[![ci](https://github.com/alexhass/syr_connect/actions/workflows/ci.yml/badge.svg)](https://github.com/alexhass/syr_connect/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/alexhass/syr_connect/graph/badge.svg?token=8P822HPPF3)](https://codecov.io/gh/alexhass/syr_connect)
+[![hassfest](https://github.com/joseph6432/conelclearpro_connect/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/joseph6432/conelclearpro_connect/actions/workflows/hassfest.yaml)
+[![HACS](https://github.com/joseph6432/conelclearpro_connect/actions/workflows/hacs.yaml/badge.svg)](https://github.com/joseph6432/conelclearpro_connect/actions/workflows/hacs.yaml)
+[![ci](https://github.com/joseph6432/conelclearpro_connect/actions/workflows/ci.yml/badge.svg)](https://github.com/joseph6432/conelclearpro_connect/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/joseph6432/conelclearpro_connect/graph/badge.svg?token=8P822HPPF3)](https://codecov.io/gh/joseph6432/conelclearpro_connect)
 
 This custom integration enables control of SYR Connect devices through Home Assistant. This integration can also be used with identical devices from other brands. Mixed installations of different brands are supported as well.
 
