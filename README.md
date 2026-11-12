@@ -6,7 +6,7 @@ Many thanks for his afford!
 
 
 
-<img src="custom_components/syr_connect/brand/logo.png" alt="Syr" width="200">
+<img src="custom_components/conelclearpro_connect/brand/logo.png" alt="ConelClearPro" width="200">
 
 # SYR Connect - Home Assistant Integration
 
