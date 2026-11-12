@@ -1,19 +1,15 @@
 {
   "config": {
     "abort": {
-      "already_configured": "Deze hub is al geconfigureerd",
-      "reauth_failed": "Herautenticatie mislukt. Probeer het opnieuw.",
-      "reauth_successful": "Herautenticatie geslaagd",
-      "reconfigure_failed": "Herconfiguratie mislukt. Probeer het opnieuw.",
-      "reconfigure_successful": "Herconfiguratie geslaagd"
+      "already_configured": "Deze hub is al geconfigureerd"
     },
     "error": {
-      "cannot_connect": "Kan geen verbinding maken met de service. Controleer uw internetverbinding en probeer het opnieuw.",
-      "cannot_connect_local": "Kan geen verbinding maken met het lokale apparaat. Controleer of het IP-adres correct is en of het apparaat is ingeschakeld en verbonden met uw lokale netwerk.",
-      "host_invalid": "Ongeldige host. Voer een geldig IP-adres of hostnaam in (geen spaties, geen poortnummer).",
-      "host_no_port": "De host mag geen poortnummer bevatten. Voer alleen het IP-adres of de hostnaam in.",
-      "invalid_auth": "Ongeldige gebruikersnaam of wachtwoord. Controleer uw aanmeldingsgegevens.",
-      "unknown": "Er is een onverwachte fout opgetreden. Probeer het later opnieuw."
+      "cannot_connect": "Kan geen verbinding maken met de service. De internetverbinding moet worden gecontroleerd.",
+      "cannot_connect_local": "Kan geen verbinding maken met het lokale apparaat. Het IP-adres moet correct zijn en het apparaat moet zijn ingeschakeld en verbonden met het lokale netwerk.",
+      "host_invalid": "Ongeldige host. Een geldig IP-adres of een geldige hostnaam is vereist.",
+      "host_no_port": "De host mag geen poortnummer bevatten. Alleen het IP-adres of de hostnaam is toegestaan.",
+      "invalid_auth": "Ongeldige gebruikersnaam of wachtwoord. De aanmeldingsgegevens moeten worden gecontroleerd.",
+      "unknown": "Er is een onverwachte fout opgetreden. De actie kan later opnieuw worden uitgevoerd."
     },
     "step": {
       "api_json": {
@@ -21,7 +17,11 @@
           "host": "Hostnaam of IP-adres",
           "model": "Apparaatmodel"
         },
-        "description": "Voer het model en de hostnaam/het IP-adres in voor lokale toegang",
+        "data_description": {
+          "host": "IP-adres of hostnaam van het apparaat in het lokale netwerk.",
+          "model": "Model van het apparaat kiezen"
+        },
+        "description": "Model en hostnaam of IP-adres van het apparaat",
         "title": "SYR Connect (Lokaal)"
       },
       "api_xml": {
@@ -30,7 +30,12 @@
           "service": "Service",
           "username": "Gebruikersnaam"
         },
-        "description": "Voer uw app-aanmeldingsgegevens in voor cloudtoegang",
+        "data_description": {
+          "password": "Het wachtwoord waarmee bij de cloud wordt aangemeld.",
+          "service": "De cloud kiezen waarmee de apparaten worden gebruikt. Elke cloud heeft eigen accounts.",
+          "username": "De gebruikersnaam waarmee bij de cloud wordt aangemeld."
+        },
+        "description": "Aanmeldingsgegevens van de app voor de cloud",
         "title": "SYR Connect (Cloud)"
       },
       "reauth_confirm": {
@@ -38,8 +43,24 @@
           "password": "Wachtwoord",
           "username": "Gebruikersnaam"
         },
-        "description": "De aanmeldingsgegevens voor {username} zijn niet meer geldig. Voer nieuwe aanmeldingsgegevens in.",
+        "data_description": {
+          "password": "Het wachtwoord waarmee bij de cloud wordt aangemeld.",
+          "username": "De gebruikersnaam waarmee bij de cloud wordt aangemeld."
+        },
+        "description": "De aanmeldingsgegevens voor {username} zijn niet meer geldig. Nieuwe aanmeldingsgegevens zijn vereist.",
         "title": "SYR Connect opnieuw verifiëren"
+      },
+      "reauth_confirm_local": {
+        "data": {
+          "host": "Hostnaam of IP-adres",
+          "model": "Apparaatmodel"
+        },
+        "data_description": {
+          "host": "IP-adres of hostnaam van het apparaat in het lokale netwerk, zonder poort.",
+          "model": "Model van het apparaat kiezen. Daarvan hangt het adres van de lokale API af."
+        },
+        "description": "Het apparaat op {host} heeft de verbinding geweigerd. Het apparaatmodel en de hostnaam of het IP-adres moeten worden gecontroleerd.",
+        "title": "SYR Connect (Lokaal) opnieuw verbinden"
       },
       "reconfigure": {
         "data": {
@@ -49,14 +70,25 @@
           "service": "Service",
           "username": "Gebruikersnaam"
         },
-        "description": "Werk uw instellingen bij.",
+        "data_description": {
+          "host": "IP-adres of hostnaam van het apparaat in het lokale netwerk, zonder poort.",
+          "model": "Model van het apparaat kiezen",
+          "password": "Het wachtwoord waarmee bij de cloud wordt aangemeld.",
+          "service": "De cloud kiezen waarmee de apparaten worden gebruikt. Elke cloud heeft eigen accounts.",
+          "username": "Het account waarmee bij de cloud wordt aangemeld."
+        },
+        "description": "De instellingen kunnen worden gewijzigd.",
         "title": "SYR Connect opnieuw configureren"
       },
       "user": {
-        "description": "Kies hoe u verbinding wilt maken met uw SYR-apparaat:\n\n- **Cloudtoegang**: Gebruik uw app-aanmeldingsgegevens om via de SYR cloudservice toegang te krijgen tot al uw apparaten. Vereist internetverbinding.\n\n- **Lokale toegang**: Maak rechtstreeks verbinding met een apparaat op uw lokale netwerk via het IP-adres. Werkt offline en biedt snellere reactietijden.",
+        "description": "Type verbinding met het SYR-apparaat:",
+        "menu_option_descriptions": {
+          "api_json": "Rechtstreekse verbinding met een apparaat in het lokale netwerk via het IP-adres. Werkt zonder internet en reageert sneller.",
+          "api_xml": "Toegang tot alle apparaten van het account via de SYR-cloudservice met de aanmeldingsgegevens van de app. Vereist een internetverbinding."
+        },
         "menu_options": {
-          "api_json": "Lokale toegang",
-          "api_xml": "Cloudtoegang"
+          "api_json": "Lokaal",
+          "api_xml": "Cloud"
         },
         "title": "SYR Connect"
       }
@@ -64,12 +96,60 @@
   },
   "entity": {
     "binary_sensor": {
+      "get71": {
+        "name": "Lekbescherming",
+        "state": {
+          "false": "Actief",
+          "true": "Gedeactiveerd"
+        }
+      },
+      "getbsa": {
+        "name": "Vloersensorbewaking",
+        "state": {
+          "false": "Gedeactiveerd",
+          "true": "Actief"
+        }
+      },
       "getbuz": {
         "name": "Zoemer bij alarm",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
+      },
+      "getcsd": {
+        "name": "Geleidbaarheidssensor",
+        "state": {
+          "false": "Gedeactiveerd",
+          "true": "Actief"
+        }
+      },
+      "getids": {
+        "name": "Zomertijd",
+        "state": {
+          "false": "Uitgeschakeld",
+          "true": "Ingeschakeld"
+        }
+      },
+      "getpsd": {
+        "name": "Druksensor",
+        "state": {
+          "false": "Gedeactiveerd",
+          "true": "Actief"
+        }
+      },
+      "getsfv": {
+        "name": "Firmwarecontrole"
+      },
+      "gettsd": {
+        "name": "Temperatuursensor",
+        "state": {
+          "false": "Gedeactiveerd",
+          "true": "Actief"
+        }
+      },
+      "getvto": {
+        "name": "Kleptest"
       }
     },
     "button": {
@@ -77,19 +157,13 @@
         "name": "Alarm resetten"
       },
       "setdex": {
-        "name": "Microlek-test starten"
+        "name": "Microlektest starten"
       },
       "setnot": {
         "name": "Melding resetten"
       },
-      "setrst": {
-        "name": "Apparaat resetten"
-      },
       "setsir": {
         "name": "Nu regenereren"
-      },
-      "setsmr": {
-        "name": "Meervoudige regeneratie"
       },
       "setwrn": {
         "name": "Waarschuwing resetten"
@@ -100,7 +174,10 @@
         "name": "Alarmduur"
       },
       "getcrs": {
-        "name": "Cartridgegrootte"
+        "name": "Cartridgegrootte",
+        "state": {
+          "custom": "Aangepast"
+        }
       },
       "getcrt": {
         "name": "Cartridgetype",
@@ -111,8 +188,11 @@
           "none": "Geen"
         }
       },
+      "getcwl": {
+        "name": "Waarschuwingsdrempel resterende capaciteit"
+      },
       "getfcd": {
-        "name": "Filterterugspoel-interval",
+        "name": "Filterterugspoelinterval",
         "state": {
           "10368000": "4 maanden",
           "12960000": "5 maanden",
@@ -128,6 +208,9 @@
           "7776000": "3 maanden"
         }
       },
+      "getfcs": {
+        "name": "Cartridgegrootte (aangepast)"
+      },
       "getffm": {
         "name": "Filtertype",
         "state": {
@@ -136,6 +219,12 @@
           "2": "Vervangbaar filter",
           "3": "Geen filter"
         }
+      },
+      "getfmt": {
+        "name": "Maximale vulduur (eerste vulling)"
+      },
+      "getfvt": {
+        "name": "Maximaal vulvolume (eerste vulling)"
       },
       "getiwh": {
         "name": "Ruwwaterhardheid"
@@ -400,7 +489,7 @@
         "name": "Regeneratietijd"
       },
       "getrvt": {
-        "name": "Maximale vullading"
+        "name": "Maximaal vulvolume"
       },
       "getsro": {
         "name": "Displayoriëntatie",
@@ -412,13 +501,13 @@
         }
       },
       "getsv1": {
-        "name": "Zoutcontainervolume 1"
+        "name": "Zouthoeveelheid in container 1"
       },
       "getsv2": {
-        "name": "Zoutcontainervolume 2"
+        "name": "Zouthoeveelheid in container 2"
       },
       "getsv3": {
-        "name": "Zoutcontainervolume 3"
+        "name": "Zouthoeveelheid in container 3"
       },
       "gettpr": {
         "name": "Streefdruk"
@@ -449,7 +538,7 @@
         }
       },
       "getab": {
-        "name": "Klep afsluiting",
+        "name": "Klepafsluiting",
         "state": {
           "false": "Geopend",
           "true": "Gesloten"
@@ -465,9 +554,10 @@
           "alarm_cartridge_exhausted_capacity": "Cartridge uitgeput (capaciteit)",
           "alarm_cartridge_exhausted_conductivity": "Cartridge uitgeput (geleidbaarheid)",
           "alarm_chlor_generator_fault": "Storing chloorgenerator!",
+          "alarm_conductivity_too_high": "Geleidbaarheid te hoog",
           "alarm_end_switch": "Eindschakelaar",
-          "alarm_external_sensor_leakage_cable": "Externe sensor lek (kabel)",
-          "alarm_external_sensor_leakage_radio": "Externe sensor lek (radio)",
+          "alarm_external_sensor_leakage_cable": "Lek externe sensor (kabel)",
+          "alarm_external_sensor_leakage_radio": "Lek externe sensor (radio)",
           "alarm_fill_cycles_exceeded": "Vulcycli overschreden!",
           "alarm_flow_sensor_fault": "Storing doorstroomsensor!",
           "alarm_heating_fill_time_leak": "Tijdlek vulling verwarming!",
@@ -480,6 +570,7 @@
           "alarm_microleakage_detected": "Microlek gedetecteerd!",
           "alarm_motor_current_exceeded": "Motorstroomgrens overschreden!",
           "alarm_no_network_connection": "Netwerkverbindingsfout",
+          "alarm_no_power_supply": "Geen stroomvoorziening",
           "alarm_pressure_sensor_faulty": "Druksensor defect!",
           "alarm_pressure_too_high": "Inlaatdruk te hoog",
           "alarm_pressure_too_low": "Inlaatdruk te laag",
@@ -489,15 +580,16 @@
           "alarm_safefloor_high_temperature": "Hoge temperatuurdrempel overschreden",
           "alarm_safefloor_low_humidity": "Lage vochtigheidsdrempel overschreden",
           "alarm_safefloor_low_temperature": "Lage temperatuurdrempel overschreden",
-          "alarm_safefloor_weather": "Temperatuursensorfout",
+          "alarm_safefloor_weather": "Temperatuur- en vochtigheidssensorfout",
           "alarm_safet_absence_leakage_detected": "Afwezigheidslek gedetecteerd. Volume overschreden",
           "alarm_safet_flow_leakage_detected": "Stroomlek gedetecteerd: volumestroom > 3500 l/h",
-          "alarm_safet_flow_time_exceeded": "Tijdcriterium voor doorstroming overschreden.",
+          "alarm_safet_flow_time_exceeded": "Tijdcriterium voor doorstroming overschreden",
           "alarm_safet_leakage_volume_reached": "Aanwezigheidslek gedetecteerd. Volume overschreden",
           "alarm_safet_microleakage_detected": "Microlek gedetecteerd. Grenswaarde overschreden",
           "alarm_safet_turbine_no_signal": "Geen turbinesignaal",
           "alarm_safet_valve_cannot_be_operated": "Klep kan niet worden bediend",
           "alarm_salt_supply_empty": "Zoutvoorraad leeg",
+          "alarm_salt_supply_low": "Zoutvoorraad laag",
           "alarm_target_pressure_unreachable": "Streefdruk kan niet worden bereikt!",
           "alarm_temperature_sensor_faulty": "Temperatuursensor defect!",
           "alarm_turbine_blocked": "Turbine geblokkeerd!",
@@ -514,9 +606,57 @@
       "getalm": {
         "name": "Laatste alarmen",
         "state": {
-          "low_salt": "Laag zout",
-          "no_alarm": "Geen alarm",
-          "no_salt": "Geen zout"
+          "alarm_battery_low": "Batterij leeg",
+          "alarm_battery_weak": "Zwakke batterij!",
+          "alarm_brine_level_high": "Zoutreservoirniveau te hoog",
+          "alarm_brine_level_low": "Zoutreservoirniveau te laag",
+          "alarm_cartridge_exhausted_capacity": "Cartridge uitgeput (capaciteit)",
+          "alarm_cartridge_exhausted_conductivity": "Cartridge uitgeput (geleidbaarheid)",
+          "alarm_chlor_generator_fault": "Storing chloorgenerator!",
+          "alarm_conductivity_too_high": "Geleidbaarheid te hoog",
+          "alarm_end_switch": "Eindschakelaar",
+          "alarm_external_sensor_leakage_cable": "Lek externe sensor (kabel)",
+          "alarm_external_sensor_leakage_radio": "Lek externe sensor (radio)",
+          "alarm_fill_cycles_exceeded": "Vulcycli overschreden!",
+          "alarm_flow_sensor_fault": "Storing doorstroomsensor!",
+          "alarm_heating_fill_time_leak": "Tijdlek vulling verwarming!",
+          "alarm_heating_fill_volume_leak": "Volumelek vulling verwarming!",
+          "alarm_increased_water_hardness": "Verhoogde waterhardheid",
+          "alarm_leakage_time_reached": "Lektijd bereikt!",
+          "alarm_leakage_volume_approaching": "Lekvolume nadert grenswaarde",
+          "alarm_leakage_volume_reached": "Lekvolume bereikt!",
+          "alarm_max_flow_rate_reached": "Maximale doorstroomsnelheid bereikt!",
+          "alarm_microleakage_detected": "Microlek gedetecteerd!",
+          "alarm_motor_current_exceeded": "Motorstroomgrens overschreden!",
+          "alarm_no_network_connection": "Netwerkverbindingsfout",
+          "alarm_no_power_supply": "Geen stroomvoorziening",
+          "alarm_pressure_sensor_faulty": "Druksensor defect!",
+          "alarm_pressure_too_high": "Inlaatdruk te hoog",
+          "alarm_pressure_too_low": "Inlaatdruk te laag",
+          "alarm_safefloor_communication": "Netwerkverbindingsfout",
+          "alarm_safefloor_flood": "Een lek bij de vloersensor is gedetecteerd",
+          "alarm_safefloor_high_humidity": "Hoge vochtigheidsdrempel overschreden",
+          "alarm_safefloor_high_temperature": "Hoge temperatuurdrempel overschreden",
+          "alarm_safefloor_low_humidity": "Lage vochtigheidsdrempel overschreden",
+          "alarm_safefloor_low_temperature": "Lage temperatuurdrempel overschreden",
+          "alarm_safefloor_weather": "Temperatuur- en vochtigheidssensorfout",
+          "alarm_safet_absence_leakage_detected": "Afwezigheidslek gedetecteerd. Volume overschreden",
+          "alarm_safet_flow_leakage_detected": "Stroomlek gedetecteerd: volumestroom > 3500 l/h",
+          "alarm_safet_flow_time_exceeded": "Tijdcriterium voor doorstroming overschreden",
+          "alarm_safet_leakage_volume_reached": "Aanwezigheidslek gedetecteerd. Volume overschreden",
+          "alarm_safet_microleakage_detected": "Microlek gedetecteerd. Grenswaarde overschreden",
+          "alarm_safet_turbine_no_signal": "Geen turbinesignaal",
+          "alarm_safet_valve_cannot_be_operated": "Klep kan niet worden bediend",
+          "alarm_salt_supply_empty": "Zoutvoorraad leeg",
+          "alarm_salt_supply_low": "Zoutvoorraad laag",
+          "alarm_target_pressure_unreachable": "Streefdruk kan niet worden bereikt!",
+          "alarm_temperature_sensor_faulty": "Temperatuursensor defect!",
+          "alarm_turbine_blocked": "Turbine geblokkeerd!",
+          "alarm_valve_malfunction": "Klepmechanisme defect",
+          "alarm_valve_position": "Klepstand",
+          "error_no_information": "Fout: geen informatie beschikbaar",
+          "fault_conductance_sensor": "Geleidbaarheidssensor defect!",
+          "no_alarm": "Geen alarm"
         }
       },
       "getaln": {
@@ -526,7 +666,7 @@
         "name": "Laatste waarschuwingen"
       },
       "getapt": {
-        "name": "Access point time-out"
+        "name": "Time-out toegangspunt"
       },
       "getavo": {
         "name": "Huidige doorstroming"
@@ -543,11 +683,11 @@
       "getbat": {
         "name": "Batterijspanning"
       },
-      "getcde": {
-        "name": "Configuratiecode"
-      },
       "getcel": {
         "name": "Temperatuur"
+      },
+      "getcfo": {
+        "name": "Doorstromingsoffset van de cyclus"
       },
       "getcft": {
         "name": "Huidige vulduur"
@@ -561,8 +701,19 @@
       "getcnd": {
         "name": "Geleidbaarheid"
       },
-      "getcno": {
-        "name": "Codenummer"
+      "getcnd_class": {
+        "name": "Waterhardheidsbereik",
+        "state": {
+          "hard": "Hard",
+          "medium": "Gemiddeld",
+          "soft": "Zacht"
+        }
+      },
+      "getcnf": {
+        "name": "Geleidbaarheidsfactor"
+      },
+      "getcnl": {
+        "name": "Geleidbaarheidsgrens"
       },
       "getcoa": {
         "name": "Teller automatische terugspoelingen"
@@ -586,25 +737,31 @@
         }
       },
       "getcs1": {
-        "name": "Resterende harscapaciteit 1"
+        "name": "Resterende harscapaciteit in tank 1"
       },
       "getcs2": {
-        "name": "Resterende harscapaciteit 2"
+        "name": "Resterende harscapaciteit in tank 2"
       },
       "getcs3": {
-        "name": "Resterende harscapaciteit 3"
+        "name": "Resterende harscapaciteit in tank 3"
+      },
+      "getcwl": {
+        "name": "Waarschuwingsdrempel resterende capaciteit"
       },
       "getcyn": {
         "name": "Regeneratiecyclusteller"
       },
       "getcyt": {
-        "name": "Regeneratiecyclustijd"
+        "name": "Resterende regeneratiecyclustijd"
       },
       "getdbd": {
         "name": "Drukval bij lektest"
       },
-      "getden": {
-        "name": "Apparaat ingeschakeld"
+      "getdbt": {
+        "name": "Drukvaltijd microlektest"
+      },
+      "getdcm": {
+        "name": "Sluittijd klep microlektest"
       },
       "getdfm": {
         "name": "Apparaatfuncties",
@@ -612,39 +769,53 @@
           "1": "Lekbeveiliging",
           "2": "Aansluitcentrum",
           "3": "All-in-One",
-          "4": "Automatische terugspoel (RSA)",
-          "5": "Terugspoefilter met drukregelaar (DM) + Lekbeveiliging (LS)"
+          "4": "Automatische terugspoeling (RSA)",
+          "5": "Terugspoelfilter met drukregelaar (DM) + lekbeveiliging (LS)"
         }
       },
       "getdgw": {
         "name": "Gateway"
       },
       "getdma": {
-        "name": "Microlek-alarmmodus",
+        "name": "Microlekalarmmodus",
         "state": {
+          "0": "Uitgeschakeld",
           "1": "Waarschuwing",
           "2": "Alarm"
         }
       },
+      "getdom": {
+        "name": "Openingstijd klep microlektest"
+      },
+      "getdpl": {
+        "name": "Turbine-impulsen microlektest"
+      },
       "getdrp": {
-        "name": "Microlek-test interval",
+        "name": "Microlektestinterval",
         "state": {
+          "0": "Altijd",
           "1": "Dagelijks",
           "2": "Wekelijks",
           "3": "Maandelijks"
         }
       },
+      "getdst": {
+        "name": "Wachttijd zonder doorstroming microlektest"
+      },
       "getdsv": {
-        "name": "Microlek-test",
+        "name": "Microlektest",
         "state": {
           "0": "Inactief",
           "1": "Actief",
-          "2": "Afgebroken - drukval",
+          "2": "Afgebroken (drukval)",
           "3": "Overgeslagen"
         }
       },
+      "getdtc": {
+        "name": "Controlecycli microlektest"
+      },
       "getdtt": {
-        "name": "Microlek-test tijd"
+        "name": "Microlektesttijd"
       },
       "getdwf": {
         "name": "Verwacht dagelijks waterverbruik"
@@ -656,7 +827,7 @@
         "name": "IP-adres (LAN)"
       },
       "getfcd": {
-        "name": "Filterterugspoel-interval",
+        "name": "Filterterugspoelinterval",
         "state": {
           "10368000": "4 maanden",
           "12960000": "5 maanden",
@@ -675,6 +846,9 @@
       "getfco": {
         "name": "IJzergehalte"
       },
+      "getfcs": {
+        "name": "Cartridgegrootte (aangepast)"
+      },
       "getffm": {
         "name": "Filtertype",
         "state": {
@@ -689,6 +863,12 @@
       },
       "getflo": {
         "name": "Waterdoorstroom"
+      },
+      "getfmt": {
+        "name": "Maximale vulduur (eerste vulling)"
+      },
+      "getfvt": {
+        "name": "Maximaal vulvolume (eerste vulling)"
       },
       "gethmd": {
         "name": "Luchtvochtigheid"
@@ -714,7 +894,7 @@
         "name": "Laatste regeneratie"
       },
       "getle": {
-        "name": "Lekbescherming - Aanwezigheidsniveau"
+        "name": "Lekbeschermingsniveau (aanwezig)"
       },
       "getlft": {
         "name": "Laatste vulduur"
@@ -726,7 +906,10 @@
         "name": "Apparaattaal",
         "state": {
           "0": "Duits",
-          "1": "Engels"
+          "1": "Engels",
+          "2": "Spaans",
+          "3": "Italiaans",
+          "4": "Pools"
         }
       },
       "getlot": {
@@ -738,11 +921,14 @@
       "getltv": {
         "name": "Laatste gedoseerde volume"
       },
+      "getlwt": {
+        "name": "Lekwaarschuwingsdrempel"
+      },
       "getmac": {
         "name": "MAC-adres"
       },
       "getmac1": {
-        "name": "MAC-adres (Wi‑Fi)"
+        "name": "MAC-adres (Wi-Fi)"
       },
       "getmac2": {
         "name": "MAC-adres (LAN)"
@@ -859,56 +1045,56 @@
         }
       },
       "getpb1": {
-        "name": "Zoemer profiel 1",
+        "name": "Zoemer (profiel 1)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpb2": {
-        "name": "Zoemer profiel 2",
+        "name": "Zoemer (profiel 2)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpb3": {
-        "name": "Zoemer profiel 3",
+        "name": "Zoemer (profiel 3)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpb4": {
-        "name": "Zoemer profiel 4",
+        "name": "Zoemer (profiel 4)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpb5": {
-        "name": "Zoemer profiel 5",
+        "name": "Zoemer (profiel 5)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpb6": {
-        "name": "Zoemer profiel 6",
+        "name": "Zoemer (profiel 6)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpb7": {
-        "name": "Zoemer profiel 7",
+        "name": "Zoemer (profiel 7)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpb8": {
-        "name": "Zoemer profiel 8",
+        "name": "Zoemer (profiel 8)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
@@ -939,108 +1125,108 @@
         "name": "Doorstromingslekdrempel 8"
       },
       "getpm1": {
-        "name": "Microlek-test profiel 1",
+        "name": "Microlektest (profiel 1)",
         "state": {
           "false": "Inactief",
           "true": "Actief"
         }
       },
       "getpm2": {
-        "name": "Microlek-test profiel 2",
+        "name": "Microlektest (profiel 2)",
         "state": {
           "false": "Inactief",
           "true": "Actief"
         }
       },
       "getpm3": {
-        "name": "Microlek-test profiel 3",
+        "name": "Microlektest (profiel 3)",
         "state": {
           "false": "Inactief",
           "true": "Actief"
         }
       },
       "getpm4": {
-        "name": "Microlek-test profiel 4",
+        "name": "Microlektest (profiel 4)",
         "state": {
           "false": "Inactief",
           "true": "Actief"
         }
       },
       "getpm5": {
-        "name": "Microlek-test profiel 5",
+        "name": "Microlektest (profiel 5)",
         "state": {
           "false": "Inactief",
           "true": "Actief"
         }
       },
       "getpm6": {
-        "name": "Microlek-test profiel 6",
+        "name": "Microlektest (profiel 6)",
         "state": {
           "false": "Inactief",
           "true": "Actief"
         }
       },
       "getpm7": {
-        "name": "Microlek-test profiel 7",
+        "name": "Microlektest (profiel 7)",
         "state": {
           "false": "Inactief",
           "true": "Actief"
         }
       },
       "getpm8": {
-        "name": "Microlek-test profiel 8",
+        "name": "Microlektest (profiel 8)",
         "state": {
           "false": "Inactief",
           "true": "Actief"
         }
       },
       "getpn1": {
-        "name": "Lekbeschermingsprofiel naam 1"
+        "name": "Lekbeschermingsprofielnaam 1"
       },
       "getpn2": {
-        "name": "Lekbeschermingsprofiel naam 2"
+        "name": "Lekbeschermingsprofielnaam 2"
       },
       "getpn3": {
-        "name": "Lekbeschermingsprofiel naam 3"
+        "name": "Lekbeschermingsprofielnaam 3"
       },
       "getpn4": {
-        "name": "Lekbeschermingsprofiel naam 4"
+        "name": "Lekbeschermingsprofielnaam 4"
       },
       "getpn5": {
-        "name": "Lekbeschermingsprofiel naam 5"
+        "name": "Lekbeschermingsprofielnaam 5"
       },
       "getpn6": {
-        "name": "Lekbeschermingsprofiel naam 6"
+        "name": "Lekbeschermingsprofielnaam 6"
       },
       "getpn7": {
-        "name": "Lekbeschermingsprofiel naam 7"
+        "name": "Lekbeschermingsprofielnaam 7"
       },
       "getpn8": {
-        "name": "Lekbeschermingsprofiel naam 8"
+        "name": "Lekbeschermingsprofielnaam 8"
       },
       "getpr1": {
-        "name": "Terugkeertijd 1 naar aanwezigheidsprofiel"
+        "name": "Terugkeertijd naar aanwezigheidsprofiel (profiel 1)"
       },
       "getpr2": {
-        "name": "Terugkeertijd 2 naar aanwezigheidsprofiel"
+        "name": "Terugkeertijd naar aanwezigheidsprofiel (profiel 2)"
       },
       "getpr3": {
-        "name": "Terugkeertijd 3 naar aanwezigheidsprofiel"
+        "name": "Terugkeertijd naar aanwezigheidsprofiel (profiel 3)"
       },
       "getpr4": {
-        "name": "Terugkeertijd 4 naar aanwezigheidsprofiel"
+        "name": "Terugkeertijd naar aanwezigheidsprofiel (profiel 4)"
       },
       "getpr5": {
-        "name": "Terugkeertijd 5 naar aanwezigheidsprofiel"
+        "name": "Terugkeertijd naar aanwezigheidsprofiel (profiel 5)"
       },
       "getpr6": {
-        "name": "Terugkeertijd 6 naar aanwezigheidsprofiel"
+        "name": "Terugkeertijd naar aanwezigheidsprofiel (profiel 6)"
       },
       "getpr7": {
-        "name": "Terugkeertijd 7 naar aanwezigheidsprofiel"
+        "name": "Terugkeertijd naar aanwezigheidsprofiel (profiel 7)"
       },
       "getpr8": {
-        "name": "Terugkeertijd 8 naar aanwezigheidsprofiel"
+        "name": "Terugkeertijd naar aanwezigheidsprofiel (profiel 8)"
       },
       "getprc": {
         "name": "Niveau resterende capaciteit"
@@ -1051,6 +1237,9 @@
           "1": "Aanwezig",
           "2": "Afwezig"
         }
+      },
+      "getprn": {
+        "name": "Aantal lekbeschermingsprofielen"
       },
       "getprs": {
         "name": "Inlaatdruk"
@@ -1111,56 +1300,56 @@
         "name": "Volumelekdrempel 8"
       },
       "getpw1": {
-        "name": "Lekwaarschuwingsprofiel 1",
+        "name": "Lekwaarschuwing (profiel 1)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpw2": {
-        "name": "Lekwaarschuwingsprofiel 2",
+        "name": "Lekwaarschuwing (profiel 2)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpw3": {
-        "name": "Lekwaarschuwingsprofiel 3",
+        "name": "Lekwaarschuwing (profiel 3)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpw4": {
-        "name": "Lekwaarschuwingsprofiel 4",
+        "name": "Lekwaarschuwing (profiel 4)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpw5": {
-        "name": "Lekwaarschuwingsprofiel 5",
+        "name": "Lekwaarschuwing (profiel 5)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpw6": {
-        "name": "Lekwaarschuwingsprofiel 6",
+        "name": "Lekwaarschuwing (profiel 6)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpw7": {
-        "name": "Lekwaarschuwingsprofiel 7",
+        "name": "Lekwaarschuwing (profiel 7)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
       },
       "getpw8": {
-        "name": "Lekwaarschuwingsprofiel 8",
+        "name": "Lekwaarschuwing (profiel 8)",
         "state": {
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
@@ -1189,10 +1378,10 @@
         "name": "Zoutdosering"
       },
       "getre1": {
-        "name": "Reservecapaciteit fles 1"
+        "name": "Reservecapaciteit in fles 1"
       },
       "getre2": {
-        "name": "Reservecapaciteit fles 2"
+        "name": "Reservecapaciteit in fles 2"
       },
       "getres": {
         "name": "Resterende capaciteit"
@@ -1201,19 +1390,19 @@
         "name": "Regeneratiestatus",
         "state": {
           "0": "Geen regeneratie",
-          "1": "Tank 1 regenereert",
-          "2": "Tank 2 regenereert"
+          "1": "Regeneratie in tank 1",
+          "2": "Regeneratie in tank 2"
         }
       },
       "getrg2": {
-        "name": "Regeneratie tank 2",
+        "name": "Regeneratie in tank 2",
         "state": {
           "0": "Inactief",
           "1": "Bezig"
         }
       },
       "getrg3": {
-        "name": "Regeneratie tank 3",
+        "name": "Regeneratie in tank 3",
         "state": {
           "0": "Inactief",
           "1": "Bezig"
@@ -1252,9 +1441,6 @@
       "getrse": {
         "name": "Terugspoelherinneringsinterval"
       },
-      "getrth": {
-        "name": "Regeneratietijd (uur)"
-      },
       "getrti": {
         "name": "Totale duur van regeneratiecyclus"
       },
@@ -1262,7 +1448,7 @@
         "name": "Regeneratietijd"
       },
       "getrvt": {
-        "name": "Maximale vullading"
+        "name": "Maximaal vulvolume"
       },
       "getscr": {
         "name": "Serviceregeneratiecycli"
@@ -1280,6 +1466,9 @@
       "getslf": {
         "name": "Doorstroming in zelfleerfase"
       },
+      "getslo": {
+        "name": "Marge in zelfleerfase (volume en tijd)"
+      },
       "getslp": {
         "name": "Duur van zelfleerfase"
       },
@@ -1288,6 +1477,12 @@
       },
       "getslv": {
         "name": "Volume in zelfleerfase"
+      },
+      "getsmf": {
+        "name": "Minimale doorstroming in zelfleerfase"
+      },
+      "getsof": {
+        "name": "Marge in zelfleerfase (doorstroming)"
       },
       "getsre": {
         "name": "Regeneratie actief",
@@ -1315,13 +1510,13 @@
         "name": "Volgend jaarlijks onderhoud"
       },
       "getss1": {
-        "name": "Zoutcontainervoorraad 1"
+        "name": "Zoutvoorraad in container 1"
       },
       "getss2": {
-        "name": "Zoutcontainervoorraad 2"
+        "name": "Zoutvoorraad in container 2"
       },
       "getss3": {
-        "name": "Zoutcontainervoorraad 3"
+        "name": "Zoutvoorraad in container 3"
       },
       "getsta": {
         "name": "Status",
@@ -1334,28 +1529,31 @@
           "status_initial_filling": "Eerste vulling",
           "status_manual_filling": "Handmatig vullen",
           "status_refill_salt": "Vul zout bij",
-          "status_regenerant_rinse": "Regenerant spoelen",
+          "status_regenerant_rinse": "Spoelen met regenerant",
           "status_slow_rinse": "Langzaam spoelen",
           "status_standby": "Stand-by"
         }
       },
       "getsv1": {
-        "name": "Zoutcontainervolume 1"
+        "name": "Zouthoeveelheid in container 1"
       },
       "getsv2": {
-        "name": "Zoutcontainervolume 2"
+        "name": "Zouthoeveelheid in container 2"
       },
       "getsv3": {
-        "name": "Zoutcontainervolume 3"
+        "name": "Zouthoeveelheid in container 3"
       },
       "gett1": {
         "name": "Lektijd 1"
       },
       "gett2": {
-        "name": "Lektijd 2"
+        "name": "Maximale doorstromingslektijd"
       },
       "gettmp": {
         "name": "Lekbescherming uitgeschakeld"
+      },
+      "gettmz": {
+        "name": "Tijdzone"
       },
       "gettor": {
         "name": "Regeneraties (totaal)"
@@ -1369,11 +1567,14 @@
       "gettrv": {
         "name": "Totaal gevuld volume"
       },
+      "getttm": {
+        "name": "Maximale tijd zonder turbine-impulsen"
+      },
       "gettyp": {
         "name": "Apparaattype"
       },
       "getul": {
-        "name": "Lekbescherming - Afwezigheidsniveau"
+        "name": "Lekbeschermingsniveau (afwezig)"
       },
       "getver": {
         "name": "Firmware-versie"
@@ -1384,7 +1585,8 @@
           "10": "Gesloten",
           "11": "Sluiten",
           "20": "Geopend",
-          "21": "Openen"
+          "21": "Openen",
+          "30": "Afwezigheidslek"
         }
       },
       "getvol": {
@@ -1406,16 +1608,13 @@
         "name": "Volumedrempel 3"
       },
       "getwfc": {
-        "name": "Wi-Fi SSID"
-      },
-      "getwfl": {
-        "name": "Beschikbare netwerken"
+        "name": "Wi-Fi-SSID"
       },
       "getwfr": {
-        "name": "Wi-Fi signaalsterkte"
+        "name": "Wi-Fi-signaalsterkte"
       },
       "getwfs": {
-        "name": "Wi-Fi verbindingsstatus",
+        "name": "Wi-Fi-verbindingsstatus",
         "state": {
           "0": "Niet verbonden",
           "1": "Verbinden",
@@ -1423,13 +1622,13 @@
         }
       },
       "getwgw": {
-        "name": "Gateway (Wi‑Fi)"
+        "name": "Gateway (Wi-Fi)"
       },
       "getwhu": {
         "name": "Waterhardheidseenheid"
       },
       "getwip": {
-        "name": "IP-adres (Wi‑Fi)"
+        "name": "IP-adres (Wi-Fi)"
       },
       "getwmp": {
         "name": "Meetinterval"
@@ -1441,7 +1640,7 @@
           "cartridge_almost_exhausted": "Cartridge bijna uitgeput",
           "initial_filling": "Eerste vulling",
           "leak_warning": "Lekwaarschuwing",
-          "leak_warning_time": "Lekwaarschuwingstijd",
+          "leak_warning_time": "Lekwaarschuwing (tijd)",
           "leak_warning_volume": "Lekvolume",
           "microleakage_suspected": "Vermoeden van microlek",
           "no_batteries_detected": "Geen batterijen gedetecteerd",
@@ -1453,6 +1652,13 @@
       }
     },
     "switch": {
+      "getbpb": {
+        "name": "Profielwissel op het apparaat toestaan",
+        "state": {
+          "false": "Uitgeschakeld",
+          "true": "Ingeschakeld"
+        }
+      },
       "getbuz": {
         "name": "Zoemer bij alarm",
         "state": {
@@ -1466,6 +1672,12 @@
           "false": "Uitgeschakeld",
           "true": "Ingeschakeld"
         }
+      },
+      "getifl": {
+        "name": "Eerste vulling"
+      },
+      "getmfl": {
+        "name": "Handmatig vullen"
       },
       "getssa": {
         "name": "Automatische terugspoeling",
@@ -1489,27 +1701,74 @@
     },
     "valve": {
       "getab": {
-        "name": "Klep afsluiting",
+        "name": "Klepafsluiting",
         "state": {
           "false": "Geopend",
           "true": "Gesloten"
         }
-      },
-      "getvlv": {
-        "name": "Klepstatus",
-        "state": {
-          "10": "Gesloten",
-          "11": "Sluiten",
-          "20": "Geopend",
-          "21": "Openen"
-        }
       }
     }
   },
-  "issues": {
-    "device_offline": {
-      "description": "Het SYR Connect apparaat \"{device_name}\" is momenteel offline en kan niet worden bereikt. Controleer:\n\n- Voeding van het apparaat\n- Netwerkverbinding\n- Status van de SYR Connect cloudservice\n\nHet apparaat maakt automatisch opnieuw verbinding zodra het weer online is.",
-      "title": "Apparaat offline: {device_name}"
+  "exceptions": {
+    "auth_failed": {
+      "message": "Authenticatie bij SYR Connect mislukt. De aanmeldingsgegevens moeten opnieuw worden ingevoerd"
+    },
+    "button_press_failed": {
+      "message": "{entity} kon niet worden uitgevoerd op het apparaat {device}"
+    },
+    "coordinator_data_unavailable": {
+      "message": "Nog geen apparaatgegevens beschikbaar. De actie kan later opnieuw worden uitgevoerd"
+    },
+    "device_not_found": {
+      "message": "Het apparaat is niet meer beschikbaar in SYR Connect"
+    },
+    "firmware_update_failed": {
+      "message": "De firmware-update voor het apparaat {device} kon niet worden gestart"
+    },
+    "invalid_option": {
+      "message": "{option} is geen geldige optie voor {entity}"
+    },
+    "microleakage_test_running": {
+      "message": "Op het apparaat {device} loopt al een microlekkagetest"
+    },
+    "migration_cannot_connect": {
+      "message": "Het apparaat {device} is niet bereikbaar om het model te detecteren"
+    },
+    "migration_model_not_detected": {
+      "message": "Het model van het apparaat {device} kan niet worden gedetecteerd. De vermelding moet worden verwijderd en het apparaat opnieuw worden ingesteld"
+    },
+    "no_alarm_to_reset": {
+      "message": "Het apparaat {device} heeft geen actief alarm dat kan worden gereset"
+    },
+    "no_notification_to_reset": {
+      "message": "Het apparaat {device} heeft geen actieve melding die kan worden gereset"
+    },
+    "no_warning_to_reset": {
+      "message": "Het apparaat {device} heeft geen actieve waarschuwing die kan worden gereset"
+    },
+    "option_not_selectable": {
+      "message": "{option} kan niet worden gekozen voor {entity}"
+    },
+    "set_value_failed": {
+      "message": "{entity} kon niet worden ingesteld voor het apparaat {device}"
+    },
+    "setup_cannot_connect": {
+      "message": "Kan geen verbinding maken met SYR Connect"
+    },
+    "update_connection_error": {
+      "message": "Verbinding met SYR Connect mislukt"
+    },
+    "update_failed": {
+      "message": "Fout bij communicatie met SYR Connect"
+    },
+    "valve_close_failed": {
+      "message": "De klep van het apparaat {device} kon niet worden gesloten"
+    },
+    "valve_open_failed": {
+      "message": "De klep van het apparaat {device} kon niet worden geopend"
+    },
+    "valve_unknown_format": {
+      "message": "De klep van het apparaat {device} kan niet worden geschakeld omdat de status onbekend is"
     }
   },
   "options": {
@@ -1518,8 +1777,11 @@
         "data": {
           "scan_interval": "Update-interval"
         },
+        "data_description": {
+          "scan_interval": "Geeft aan hoeveel seconden er tussen twee updates zitten. Voor de cloud zijn minimaal 60 seconden mogelijk en voor lokale apparaten minimaal 10 seconden, in beide gevallen maximaal 600 seconden."
+        },
         "description": "Bepaalt het tijdsinterval tussen API-aanroepen.",
-        "title": "SYR Connect opties"
+        "title": "SYR Connect-opties"
       }
     }
   }

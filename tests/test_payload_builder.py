@@ -1,30 +1,32 @@
 """Test the SYR Connect payload builder."""
-from __future__ import annotations
 
+# The unit tests in this module check private helpers and attributes directly.
+# ruff: noqa: SLF001
+
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
+from xml.etree.ElementTree import Element, canonicalize
+from zoneinfo import ZoneInfo
 
+from defusedxml import ElementTree as DefusedET
 import pytest
 
-from custom_components.syr_connect.checksum import SyrChecksum
-from custom_components.syr_connect.payload_builder import PayloadBuilder
+from custom_components.conelclearpro_connect.checksum import SyrChecksum
+from custom_components.conelclearpro_connect.const import (
+    _conelclearpro_connect_CLIENT_CHECKSUM_KEY1,
+    _conelclearpro_connect_CLIENT_CHECKSUM_KEY2,
+)
+from custom_components.conelclearpro_connect.devices import safefloor
+from custom_components.conelclearpro_connect.payload_builder import PayloadBuilder
 
-
-def test_compute_local_tzo_exception_fallback(caplog) -> None:
-    """When datetime.now raises, _compute_local_tzo falls back to +00:00:00."""
-    # Patch the module-level `datetime` name to a mock so we don't try to set
-    # attributes on the real immutable `datetime.datetime` type.
-    with patch("custom_components.syr_connect.payload_builder.datetime") as fake_dt:
-        fake_dt.now.side_effect = Exception("boom")
-        caplog.set_level("ERROR")
-        tzo = PayloadBuilder._compute_local_tzo()
-
-    assert tzo == "+00:00:00"
-    assert "Failed to compute local timezone offset (tzo)" in caplog.text
+_TEMPERATURE, _HUMIDITY = safefloor.STATISTICS
 
 
 def test_compute_locale_lang_reg_from_getlocale() -> None:
     """Locale parsing returns language and region from instance `language`."""
-    pb = PayloadBuilder("1.0", MagicMock())
+    pb = PayloadBuilder("1.0", MagicMock(), "SYR Connect")
     pb.language = "de_DE"
     lang, reg = pb._compute_locale_lang_reg()
 
@@ -34,7 +36,7 @@ def test_compute_locale_lang_reg_from_getlocale() -> None:
 
 def test_compute_locale_lang_reg_from_env() -> None:
     """When instance language is set from an env-like value, return language and region."""
-    pb = PayloadBuilder("1.0", MagicMock())
+    pb = PayloadBuilder("1.0", MagicMock(), "SYR Connect")
     pb.language = "fr_FR"
     lang, reg = pb._compute_locale_lang_reg()
 
@@ -42,43 +44,217 @@ def test_compute_locale_lang_reg_from_env() -> None:
     assert reg == "FR"
 
 
-def test_compute_locale_lang_reg_exception_fallback(caplog) -> None:
-    """If no instance language is set, fallback to en/US."""
-    pb = PayloadBuilder("1.0", MagicMock())
-    caplog.set_level("ERROR")
-    lang, reg = pb._compute_locale_lang_reg()
+def test_compute_locale_lang_reg_default() -> None:
+    """Without a language argument, the default en-US is used."""
+    pb = PayloadBuilder("1.0", MagicMock(), "SYR Connect")
 
-    assert (lang, reg) == ("en", "US")
+    assert pb._compute_locale_lang_reg() == ("en", "US")
 
 
-def test_compute_locale_lang_reg_replace_exception(caplog) -> None:
-    """If `language.replace` raises, fallback to en/US is used and logged."""
-    from unittest.mock import MagicMock
+def test_compute_locale_lang_reg_from_constructor() -> None:
+    """The language passed to the constructor is used."""
+    pb = PayloadBuilder("1.0", MagicMock(), "SYR Connect", language="en-DE")
 
-    from custom_components.syr_connect.payload_builder import PayloadBuilder
+    assert pb._compute_locale_lang_reg() == ("en", "DE")
 
-    class BadLang:
-        def replace(self, *args, **kwargs):
-            raise RuntimeError("boom")
 
-    pb = PayloadBuilder("1.0", MagicMock())
-    pb.language = BadLang()
-    caplog.set_level("ERROR")
+_ATTR_SPECIAL_VALUES = [
+    'pa"ss',
+    "it's",
+    """both ' and " quotes""",
+    'x" admin="1',
+    "a&b<c>d",
+    "tab\there",
+    "line\nbreak",
+    "cr\rreturn",
+    '"',
+]
 
-    lang, reg = pb._compute_locale_lang_reg()
 
-    assert (lang, reg) == ("en", "US")
-    assert "Failed to determine locale language/region" in caplog.text
+@pytest.mark.parametrize("value", _ATTR_SPECIAL_VALUES)
+def test_login_payload_roundtrips_special_characters(value: str) -> None:
+    """Credentials with quotes/markup/whitespace arrive unchanged and cannot inject attributes."""
+    pb = PayloadBuilder("1.2.3", MagicMock(), "SYR Connect")
+
+    payload = pb.build_login_payload(value, value)
+
+    usr = DefusedET.fromstring(payload).find(".//usr")
+    assert usr is not None
+    assert set(usr.attrib) == {"n", "v"}  # nothing injected
+    assert usr.attrib["n"] == value
+    assert usr.attrib["v"] == value
+
+
+@pytest.mark.parametrize("value", _ATTR_SPECIAL_VALUES)
+def test_set_status_payload_roundtrips_special_characters(value: str) -> None:
+    """Command name/value and ids are escaped for attribute context."""
+    fake_checksum = MagicMock()
+    fake_checksum.compute_element_checksum.return_value = "CHK"
+    pb = PayloadBuilder("1.2.3", fake_checksum, "SYR Connect")
+
+    payload = pb.build_device_set_status_payload(value, value, [("setAB", value)])
+
+    # The checksum is computed over the unescaped attribute values of the tree.
+    checksum_input = fake_checksum.compute_element_checksum.call_args.args[0]
+    assert checksum_input.find(".//c").attrib["v"] == value
+
+    root = DefusedET.fromstring(payload)
+    cmd = root.find(".//c")
+    assert cmd is not None
+    assert set(cmd.attrib) == {"n", "v"}
+    assert cmd.attrib["n"] == "setAB"
+    assert cmd.attrib["v"] == value
+    assert root.find(".//us").attrib["ug"] == value
+    assert root.find(".//dcl").attrib["dclg"] == value
+
+
+@pytest.mark.parametrize("value", _ATTR_SPECIAL_VALUES)
+def test_session_and_device_payloads_roundtrip_special_characters(value: str) -> None:
+    """Session, project and device ids are escaped in every payload builder."""
+    fake_checksum = MagicMock()
+    fake_checksum.compute_element_checksum.return_value = "CHK"
+    pb = PayloadBuilder("1.2.3", fake_checksum, "SYR Connect")
+
+    device_list = DefusedET.fromstring(pb.build_device_get_list_payload(value, value))
+    assert device_list.find(".//us").attrib["ug"] == value
+    assert device_list.find(".//pr").attrib["pg"] == value
+
+    status = DefusedET.fromstring(pb.build_device_get_status_payload(value, value))
+    assert status.find(".//us").attrib["ug"] == value
+    assert status.find(".//dcl").attrib["dclg"] == value
+
+    stats = DefusedET.fromstring(
+        pb.build_device_get_statistics_payload(value, value, _TEMPERATURE)
+    )
+    assert stats.find(".//us").attrib["ug"] == value
+    assert stats.find(".//dcl").attrib["dclg"] == value
+
+
+def test_none_attribute_value_raises_instead_of_sending_none_string() -> None:
+    """A missing id must fail fast rather than be sent as ``"None"``."""
+    pb = PayloadBuilder("1.2.3", MagicMock(), "SYR Connect")
+
+    with pytest.raises(TypeError, match="ug"):
+        pb.build_device_get_list_payload(None, "p")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="pg"):
+        pb.build_device_get_list_payload("s", None)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="dclg"):
+        pb.build_device_get_status_payload("s", None)  # type: ignore[arg-type]
+
+
+def test_checksum_is_computed_without_cs_and_appended_as_last_element() -> None:
+    """The checksum input excludes <cs>; <cs> ends up as the last child of <sc>."""
+    # The root is mutated after the call, so record its children at call time.
+    tags_at_checksum_time: list[list[str]] = []
+
+    def record_tags(root: Element) -> str:
+        tags_at_checksum_time.append([child.tag for child in root])
+        return "CHK"
+
+    fake_checksum = MagicMock()
+    fake_checksum.compute_element_checksum.side_effect = record_tags
+    pb = PayloadBuilder("1.2.3", fake_checksum, "SYR Connect")
+
+    payload = pb.build_device_get_status_payload("sess", "dev")
+
+    assert tags_at_checksum_time == [["si", "us", "col"]]
+    root = DefusedET.fromstring(payload)
+    assert list(root)[-1].tag == "cs"
+    assert [child.tag for child in root] == ["si", "us", "col", "cs"]
+
+
+def test_add_checksum_is_idempotent() -> None:
+    """Adding the checksum twice to the same root gives one <cs> and the same payload."""
+    pb = PayloadBuilder(
+        "1.2.3",
+        SyrChecksum(
+            _conelclearpro_connect_CLIENT_CHECKSUM_KEY1, _conelclearpro_connect_CLIENT_CHECKSUM_KEY2
+        ),
+        "SYR Connect",
+    )
+    root = pb._new_request("sess")
+
+    first = pb._add_checksum(root)
+    second = pb._add_checksum(root)
+
+    assert second == first
+    assert len(DefusedET.fromstring(second).findall("cs")) == 1
+
+
+# Request fixtures: realistic payload structure with placeholder ids; checksums are computed by
+# the integration itself, not captured from the app.
+REQUEST_FIXTURE_DIR = Path(__file__).parent / "fixtures/xml/requests"
+_REQUEST_FIXTURES = {
+    "login": "ExampleRequest_Login.xml",
+    "list": "ExampleRequest_GetProjectDeviceCollections.xml",
+    "status": "ExampleRequest_GetDeviceCollectionStatus.xml",
+    "set": "ExampleRequest_SetDeviceCollectionStatus.xml",
+    "temperature": "ExampleRequest_GetSafeFloorStatistics_Temperature.xml",
+    "humidity": "ExampleRequest_GetSafeFloorStatistics_Humidity.xml",
+}
+
+
+def _build_reference_payloads() -> dict[str, str]:
+    session, project, device = (
+        "9f3c1a52-7d4e-4b8a-a1c6-2e5d8b07f413",
+        "8625a6fc-3547-45c4-b394-671b5c99b6b9",
+        "0b09f7ce-41a0-4085-9e69-fa8827a32b6f",
+    )
+    pb = PayloadBuilder(
+        "App-3.9.7-de-DE-iOS-iPhone-27.0.0-de.consoft.syr.connect",
+        SyrChecksum(
+            _conelclearpro_connect_CLIENT_CHECKSUM_KEY1, _conelclearpro_connect_CLIENT_CHECKSUM_KEY2
+        ),
+        "SYR Connect",
+    )
+    with (
+        patch.object(
+            PayloadBuilder, "get_timestamp", return_value="2026-10-17 10:00:00"
+        ),
+        patch.object(PayloadBuilder, "_compute_local_tzo", return_value="02:00:00"),
+        patch.object(
+            PayloadBuilder, "_compute_locale_lang_reg", return_value=("de", "DE")
+        ),
+    ):
+        return {
+            "login": pb.build_login_payload("user@example.com", "secret"),
+            "list": pb.build_device_get_list_payload(session, project),
+            "status": pb.build_device_get_status_payload(session, device),
+            "set": pb.build_device_set_status_payload(
+                session, device, [("setAB", 1), ("setSIR", "")]
+            ),
+            "temperature": pb.build_device_get_statistics_payload(
+                session, device, _TEMPERATURE
+            ),
+            "humidity": pb.build_device_get_statistics_payload(
+                session, device, _HUMIDITY
+            ),
+        }
+
+
+@pytest.mark.parametrize("name", list(_REQUEST_FIXTURES))
+def test_payloads_match_request_fixtures(name: str) -> None:
+    """Payloads equal the fixture (canonical XML, incl. real checksum, which pins attribute order)."""
+    expected = (REQUEST_FIXTURE_DIR / _REQUEST_FIXTURES[name]).read_text(
+        encoding="utf-8"
+    )
+    actual = _build_reference_payloads()[name]
+    assert canonicalize(actual, strip_text=True) == canonicalize(
+        expected, strip_text=True
+    )
 
 
 def test_build_login_payload_escapes_and_includes_tzo_lang() -> None:
     """Login payload should include escaped credentials and computed tzo/lang/reg."""
     fake_checksum = MagicMock()
-    fake_checksum.compute_xml_checksum.return_value = "CHK"
-    pb = PayloadBuilder("1.2.3", fake_checksum)
+    fake_checksum.compute_element_checksum.return_value = "CHK"
+    pb = PayloadBuilder("1.2.3", fake_checksum, "SYR Connect")
 
-    with patch.object(PayloadBuilder, "_compute_local_tzo", return_value="+01:00:00"), patch.object(
-        PayloadBuilder, "_compute_locale_lang_reg", return_value=("de", "DE")
+    with (
+        patch.object(PayloadBuilder, "_compute_local_tzo", return_value="01:00:00"),
+        patch.object(
+            PayloadBuilder, "_compute_locale_lang_reg", return_value=("de", "DE")
+        ),
     ):
         payload = pb.build_login_payload("user<&>", "pwd<&>")
 
@@ -86,65 +262,56 @@ def test_build_login_payload_escapes_and_includes_tzo_lang() -> None:
     assert "user&lt;&amp;&gt;" in payload
     assert "pwd&lt;&amp;&gt;" in payload
     # tzo and locale tags should be present
-    assert 'tzo="+01:00:00"' in payload
+    assert 'tzo="01:00:00"' in payload
     assert 'lng="de"' in payload and 'reg="DE"' in payload
 
 
-def test_build_device_get_statistics_payload_salt_and_water_use_checksum_and_lang(caplog) -> None:
-    """Statistics payload branches for salt and water include correct units and checksum."""
+def test_build_device_get_statistics_payload_uses_series_checksum_and_lang() -> None:
+    """The <sh> element carries the series attributes and the locale; a checksum is added."""
     fake_checksum = MagicMock()
-    fake_checksum.compute_xml_checksum.return_value = "CHK"
-    pb = PayloadBuilder("1.2.3", fake_checksum)
+    fake_checksum.compute_element_checksum.return_value = "CHK"
+    pb = PayloadBuilder("1.2.3", fake_checksum, "SYR Connect")
 
-    with patch.object(PayloadBuilder, "_compute_locale_lang_reg", return_value=("it", "IT")):
-        salt_payload = pb.build_device_get_statistics_payload("sess", "dev", statistic_type="salt")
-        water_payload = pb.build_device_get_statistics_payload("sess", "dev", statistic_type="water")
+    with patch.object(
+        PayloadBuilder, "_compute_locale_lang_reg", return_value=("it", "IT")
+    ):
+        payload = pb.build_device_get_statistics_payload("sess", "dev", _HUMIDITY)
 
-    # Checksum added
-    assert '<cs v="CHK"/>' in salt_payload
-    assert '<cs v="CHK"/>' in water_payload
-
-    # salt uses kg, water uses l
-    assert 'unit="kg"' in salt_payload
-    assert 'unit="l"' in water_payload
-
-    # lang/region are injected
-    assert 'lg="it"' in salt_payload
-    assert 'rg="IT"' in water_payload
-
-
-def test_compute_local_tzo_normal_format() -> None:
-    """_compute_local_tzo returns a string in ±HH:MM:SS format."""
-    tzo = PayloadBuilder._compute_local_tzo()
-    # Basic sanity: should be 9 chars like '+01:00:00' or '-05:30:00'
-    assert isinstance(tzo, str)
-    assert len(tzo) == 9
-    assert (tzo[0] == '+' or tzo[0] == '-')
-    assert tzo[3] == ':' and tzo[6] == ':'
+    root = DefusedET.fromstring(payload)
+    assert root.find("cs").attrib["v"] == "CHK"
+    assert root.find(".//sh").attrib == {
+        "t": "2",
+        "rtyp": "4",
+        "lg": "it",
+        "rg": "IT",
+        "unit": "%",
+    }
 
 
-def test_compute_local_tzo_negative_offset() -> None:
-    """Force a negative offset from astimezone() and ensure '-' sign used."""
-    from datetime import timedelta
-    from unittest.mock import MagicMock
-
-    with patch("custom_components.syr_connect.payload_builder.datetime") as fake_dt:
-        fake_now = MagicMock()
-        tz_obj = MagicMock()
-        tz_obj.utcoffset.return_value = timedelta(hours=-5, minutes=-30)
-        fake_now.astimezone.return_value = tz_obj
-        fake_dt.now.return_value = fake_now
-
-        tzo = PayloadBuilder._compute_local_tzo()
-
-    assert isinstance(tzo, str)
-    assert tzo.startswith("-")
-    assert tzo == "-05:30:00"
+@pytest.mark.parametrize(
+    ("time_zone", "month", "expected"),
+    [
+        ("Europe/Berlin", 7, "02:00:00"),  # CEST
+        ("Europe/Berlin", 1, "01:00:00"),  # CET
+        ("UTC", 7, "00:00:00"),
+        ("Asia/Kolkata", 1, "05:30:00"),
+        ("America/St_Johns", 1, "-03:30:00"),
+    ],
+)
+def test_compute_local_tzo_uses_ha_time_zone(
+    time_zone: str, month: int, expected: str
+) -> None:
+    """The offset comes from the HA time zone incl. DST; positive offsets have no sign."""
+    now = datetime(2026, month, 15, 12, 0, tzinfo=ZoneInfo(time_zone))
+    with patch(
+        "custom_components.conelclearpro_connect.payload_builder.dt_util.now", return_value=now
+    ):
+        assert PayloadBuilder._compute_local_tzo() == expected
 
 
 def test_compute_locale_lang_reg_dash_and_single() -> None:
     """Locale parsing handles dash-separated and single-part locales."""
-    pb = PayloadBuilder("1.0", MagicMock())
+    pb = PayloadBuilder("1.0", MagicMock(), "SYR Connect")
 
     # dash-separated
     pb.language = "en-US"
@@ -160,16 +327,13 @@ def test_compute_locale_lang_reg_dash_and_single() -> None:
 
 
 @pytest.fixture
-def payload_builder():
+def payload_builder() -> Any:
     """Create a payload builder instance."""
-    checksum = SyrChecksum(
-        "L8KZG4F5DSM6ANBV3CXY7W2ER1T9H0UP",
-        "KHGK5X29LVNZU56T"
-    )
-    return PayloadBuilder("App-3.7.10-de-DE-iOS-iPhone", checksum)
+    checksum = SyrChecksum("L8KZG4F5DSM6ANBV3CXY7W2ER1T9H0UP", "KHGK5X29LVNZU56T")
+    return PayloadBuilder("App-3.9.7-de-DE-iOS-iPhone", checksum, "SYR Connect")
 
 
-def test_build_login_payload(payload_builder):
+def test_build_login_payload(payload_builder: PayloadBuilder) -> None:
     """Test building login payload."""
     payload = payload_builder.build_login_payload("test@example.com", "password123")
 
@@ -179,7 +343,7 @@ def test_build_login_payload(payload_builder):
     assert "<usr n=" in payload
 
 
-def test_build_login_payload_xml_escaping(payload_builder):
+def test_build_login_payload_xml_escaping(payload_builder: PayloadBuilder) -> None:
     """Test XML escaping in login payload."""
     # Test special characters that need escaping
     payload = payload_builder.build_login_payload("test&user", "pass<word>")
@@ -194,7 +358,7 @@ def test_build_login_payload_xml_escaping(payload_builder):
     assert 'v="pass<word>"' not in payload
 
 
-def test_build_device_get_list_payload(payload_builder):
+def test_build_device_get_list_payload(payload_builder: PayloadBuilder) -> None:
     """Test building device list payload."""
     payload = payload_builder.build_device_get_list_payload("session123", "project456")
 
@@ -203,18 +367,20 @@ def test_build_device_get_list_payload(payload_builder):
     assert "<cs v=" in payload  # Checksum should be added
 
 
-def test_build_device_get_status_payload(payload_builder):
+def test_build_device_get_status_payload(payload_builder: PayloadBuilder) -> None:
     """Test building device status payload."""
     payload = payload_builder.build_device_get_status_payload("session123", "device789")
 
     assert "session123" in payload
     assert "device789" in payload
-    assert "fref=\"1\"" in payload
+    assert 'fref="1"' in payload
 
 
-def test_build_device_set_status_payload(payload_builder):
+def test_build_device_set_status_payload(payload_builder: PayloadBuilder) -> None:
     """Test building set status payload."""
-    payload = payload_builder.build_device_set_status_payload("session123", "device789", [("setSIR", 0)])
+    payload = payload_builder.build_device_set_status_payload(
+        "session123", "device789", [("setSIR", 0)]
+    )
 
     assert "session123" in payload
     assert "device789" in payload
@@ -222,34 +388,18 @@ def test_build_device_set_status_payload(payload_builder):
     assert 'v="0"' in payload
 
 
-def test_build_device_set_status_payload_with_string_value(payload_builder):
+def test_build_device_set_status_payload_with_string_value(
+    payload_builder: PayloadBuilder,
+) -> None:
     """Test building set status payload with string value."""
-    payload = payload_builder.build_device_set_status_payload("session123", "device789", [("setCNA", "NewName")])
+    payload = payload_builder.build_device_set_status_payload(
+        "session123", "device789", [("setCNA", "NewName")]
+    )
 
     assert "NewName" in payload
 
 
-def test_build_device_get_statistics_payload_water(payload_builder):
-    """Test building statistics payload for water."""
-    payload = payload_builder.build_device_get_statistics_payload("session123", "device789", "water")
-
-    assert "session123" in payload
-    assert "device789" in payload
-    assert 't="1"' in payload  # Water type
-    assert 'unit="l"' in payload
-
-
-def test_build_device_get_statistics_payload_salt(payload_builder):
-    """Test building statistics payload for salt."""
-    payload = payload_builder.build_device_get_statistics_payload("session123", "device789", "salt")
-
-    assert "session123" in payload
-    assert "device789" in payload
-    assert 't="2"' in payload  # Salt type
-    assert 'unit="kg"' in payload
-
-
-def test_get_timestamp(payload_builder):
+def test_get_timestamp(payload_builder: PayloadBuilder) -> None:
     """Test timestamp generation."""
     timestamp = payload_builder.get_timestamp()
 
@@ -262,7 +412,7 @@ def test_get_timestamp(payload_builder):
     assert timestamp[16] == ":"
 
 
-def test_xml_injection_protection(payload_builder):
+def test_xml_injection_protection(payload_builder: PayloadBuilder) -> None:
     """Test protection against XML injection attacks."""
     malicious_input = '"><script>alert("xss")</script><x y="'
 
@@ -273,12 +423,14 @@ def test_xml_injection_protection(payload_builder):
     assert "alert(" not in payload or "&" in payload  # Should be escaped
 
 
-def test_special_characters_escaping(payload_builder):
+def test_special_characters_escaping(payload_builder: PayloadBuilder) -> None:
     """Test escaping of all special XML characters."""
     special_chars_user = 'user&name"with<special>chars'
     special_chars_pass = "pass'word&test"
 
-    payload = payload_builder.build_login_payload(special_chars_user, special_chars_pass)
+    payload = payload_builder.build_login_payload(
+        special_chars_user, special_chars_pass
+    )
 
     # All special characters should be escaped
     assert "&amp;" in payload
@@ -287,7 +439,9 @@ def test_special_characters_escaping(payload_builder):
     assert 'n="user&name"' not in payload  # & should be escaped
 
 
-def test_build_device_get_list_payload_escaping(payload_builder):
+def test_build_device_get_list_payload_escaping(
+    payload_builder: PayloadBuilder,
+) -> None:
     """Test XML escaping in device list payload."""
     session = "session&123"
     project = "project<456>"
@@ -300,7 +454,9 @@ def test_build_device_get_list_payload_escaping(payload_builder):
     assert "&gt;" in payload
 
 
-def test_build_device_get_status_payload_escaping(payload_builder):
+def test_build_device_get_status_payload_escaping(
+    payload_builder: PayloadBuilder,
+) -> None:
     """Test XML escaping in device status payload."""
     session = "session'123"
     device = 'device"456'
@@ -311,12 +467,14 @@ def test_build_device_get_status_payload_escaping(payload_builder):
     assert "session" in payload and "123" in payload
 
 
-def test_build_device_set_status_payload_escaping(payload_builder):
+def test_build_device_set_status_payload_escaping(
+    payload_builder: PayloadBuilder,
+) -> None:
     """Test XML escaping in set status payload."""
     payload = payload_builder.build_device_set_status_payload(
         "session&123",
         "device<456>",
-        [("command\"test", "value'123")],
+        [('command"test', "value'123")],
     )
 
     # Special characters should be escaped
@@ -324,49 +482,48 @@ def test_build_device_set_status_payload_escaping(payload_builder):
     assert "&lt;" in payload or "&gt;" in payload
 
 
-def test_build_device_get_statistics_payload_escaping(payload_builder):
+def test_build_device_get_statistics_payload_escaping(
+    payload_builder: PayloadBuilder,
+) -> None:
     """Test XML escaping in statistics payload."""
     session = "session&test"
     device = "device<test>"
 
-    payload = payload_builder.build_device_get_statistics_payload(session, device, "water")
+    payload = payload_builder.build_device_get_statistics_payload(
+        session, device, _TEMPERATURE
+    )
 
     # Special characters should be escaped
     assert "&amp;" in payload
     assert "&lt;" in payload or "&gt;" in payload
 
 
-def test_build_device_get_statistics_payload_default_type(payload_builder):
-    """Test building statistics payload with default type (water)."""
-    payload = payload_builder.build_device_get_statistics_payload("session123", "device789")
-
-    # Should default to water
-    assert 't="1"' in payload
-    assert 'unit="l"' in payload
-
-
-def test_add_checksum_integration(payload_builder):
+def test_add_checksum_integration(payload_builder: PayloadBuilder) -> None:
     """Test that checksum is properly added to payloads."""
     payload = payload_builder.build_device_get_list_payload("sess", "proj")
 
     # Checksum should be at the end before closing tag
     assert '<cs v="' in payload
-    assert payload.index('<cs v="') < payload.index('</sc>')
+    assert payload.index('<cs v="') < payload.index("</sc>")
 
 
-def test_build_device_set_status_payload_int_value(payload_builder):
+def test_build_device_set_status_payload_int_value(
+    payload_builder: PayloadBuilder,
+) -> None:
     """Test set status payload with integer value."""
-    payload = payload_builder.build_device_set_status_payload("sess", "dev", [("cmd", 42)])
+    payload = payload_builder.build_device_set_status_payload(
+        "sess", "dev", [("cmd", 42)]
+    )
 
     # Integer should be converted to string
     assert 'v="42"' in payload
 
 
-def test_app_version_escaping_in_payloads(payload_builder):
+def test_app_version_escaping_in_payloads(payload_builder: PayloadBuilder) -> None:
     """Test that app version is escaped in payloads."""
     # Create builder with special characters in app version
     checksum = SyrChecksum("L8KZG4F5DSM6ANBV3CXY7W2ER1T9H0UP", "KHGK5X29LVNZU56T")
-    builder = PayloadBuilder("App&Version<Test>", checksum)
+    builder = PayloadBuilder("App&Version<Test>", checksum, "SYR Connect")
 
     payload = builder.build_device_get_list_payload("sess", "proj")
 
@@ -374,7 +531,7 @@ def test_app_version_escaping_in_payloads(payload_builder):
     assert "&amp;" in payload or "&lt;" in payload or "&gt;" in payload
 
 
-def test_get_timestamp_format(payload_builder):
+def test_get_timestamp_format(payload_builder: PayloadBuilder) -> None:
     """Test timestamp has correct components."""
     timestamp = payload_builder.get_timestamp()
 
@@ -390,21 +547,3 @@ def test_get_timestamp_format(payload_builder):
     assert hour.isdigit() and len(hour) == 2
     assert minute.isdigit() and len(minute) == 2
     assert second.isdigit() and len(second) == 2
-
-
-def test_compute_local_tzo_fallback_extra(monkeypatch) -> None:
-    """Force an exception in module datetime to hit the fallback branch."""
-    import importlib
-
-    pb_mod = importlib.import_module("custom_components.syr_connect.payload_builder")
-
-    class BadDateTime:
-        def now(self, *args, **kwargs):
-            raise RuntimeError("boom")
-
-    monkeypatch.setattr(pb_mod, "datetime", BadDateTime())
-
-    checksum = SyrChecksum("0123456789ABCDEF", "key")
-    pb = PayloadBuilder("1.0.0", checksum)
-
-    assert pb._compute_local_tzo() == "+00:00:00"

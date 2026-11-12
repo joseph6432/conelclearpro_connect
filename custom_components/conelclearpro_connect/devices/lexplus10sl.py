@@ -1,5 +1,6 @@
-"""Entity allowlist override for the lexplus10sl model (LEX Plus 10 SL Connect,
-dk=80/dkv=25, sbt=7).
+"""Entity allowlist override for the lexplus10sl model.
+
+LEX Plus 10 SL Connect (dk=80/dkv=25, sbt=7).
 
 Derived from tests/fixtures/xml/SyrLEXplus10SL_GetDeviceCollectionStatus.xml (no
 JSON fixture exists for this model). Unlike the plain "lex"/lexplus10s
@@ -28,79 +29,253 @@ Deliberately NOT included:
 - getCNO: empty ("") in the fixture.
 - No Wi-Fi keys in the fixture (LAN-only via getDGW/getIPA/getMAC), but like
   LEX10 an optional Wi-Fi module is possible - the Wi-Fi keys are included
-  in SENSOR_KNOWN_KEYS below anyway, since they are only ever created when
+  in SENSOR_SUPPORTED_KEYS below anyway, since they are only ever created when
   actually present in a device's status.
 
 If real-device testing shows any of the above (or other) keys are actually
-used, move them into SENSOR_KNOWN_KEYS below.
+used, move them into SENSOR_SUPPORTED_KEYS below.
 """
 
-SENSOR_KNOWN_KEYS = {
+from . import WHU_UNITS_LEX, SyrConnectDeviceProfile
+
+SENSOR_SUPPORTED_KEYS = {
     # --- Connectivity ---
     "dst",
     # --- Valve & Flow ---
-    "getAB", "getAVO", "getFLO", "getVLV",
+    "getAB",
+    "getAVO",
+    "getFLO",
+    "getVLV",
     # --- Alarm / Notification (getALA here, not getALM; no getWRN) ---
-    "getALA", "getNOT",
+    "getALA",
+    "getNOT",
     # --- Pressure ---
     "getPRS",
     # --- Water Quality ---
-    "getCEL", "getCND", "getIWH", "getOWH", "getWHU",
+    "getCEL",
+    "getCND",
+    "getIWH",
+    "getOWH",
+    "getWHU",
     # --- Water Consumption & Volume ---
     "getCOF",
     # --- Device Status ---
-    "getDEN",
     # --- Resin Capacity ---
-    "getCS1", "getCS2", "getCS3",
+    "getCS1",
     # --- Salt ---
-    "getRDO", "getRES", "getSS1", "getSV1",
+    "getRDO",
+    "getRES",
+    "getSS1",
+    "getSV1",
     # --- Regeneration ---
-    "getCYN", "getCYT", "getINR", "getLAR", "getNOR", "getRG1", "getRPD", "getRPW",
-    "getRTH", "getRTI", "getRTM", "getSCR", "getTOR",
+    "getCYN",
+    "getCYT",
+    "getINR",
+    "getLAR",
+    "getNOR",
+    "getRG1",
+    "getRPD",
+    "getRPW",
+    "getRTI",
+    "getRTM",
+    "getSCR",
+    "getTOR",
     # --- Self-Learning Phase (genuinely active in the fixture) ---
-    "getSLE", "getSLF", "getSLP", "getSLT", "getSLV",
+    "getSLE",
+    "getSLF",
+    "getSLO",
+    "getSLP",
+    "getSLT",
+    "getSLV",
+    # --- Leakage Detection (volume threshold; only getVS1 in the fixture) ---
+    "getVS1",
     # --- Microleakage Test (config keys confirmed, no status/result keys yet) ---
-    "getDBD", "getDMA", "getDRP", "getNPS",
-    # --- Leak Protection (deactivation timer, tied to the profiles below) ---
+    "getDBD",
+    "getDBT",
+    "getDCM",
+    "getDMA",
+    "getDOM",
+    "getDPL",
+    "getDRP",
+    "getDST",
+    "getDTC",
+    "getNPS",
+    # --- Leak Protection (warning threshold; deactivation timer, tied to the profiles below) ---
+    "getLWT",
     "getTMP",
     # --- Leak Protection Profiles 1-8 (core feature of this model) ---
-    "getPA1", "getPA2", "getPA3", "getPA4", "getPA5", "getPA6", "getPA7", "getPA8",
-    "getPB1", "getPB2", "getPB3", "getPB4", "getPB5", "getPB6", "getPB7", "getPB8",
-    "getPF1", "getPF2", "getPF3", "getPF4", "getPF5", "getPF6", "getPF7", "getPF8",
-    "getPM1", "getPM2", "getPM3", "getPM4", "getPM5", "getPM6", "getPM7", "getPM8",
-    "getPN1", "getPN2", "getPN3", "getPN4", "getPN5", "getPN6", "getPN7", "getPN8",
-    "getPR1", "getPR2", "getPR3", "getPR4", "getPR5", "getPR6", "getPR7", "getPR8",
-    "getPT1", "getPT2", "getPT3", "getPT4", "getPT5", "getPT6", "getPT7", "getPT8",
-    "getPV1", "getPV2", "getPV3", "getPV4", "getPV5", "getPV6", "getPV7", "getPV8",
-    "getPW1", "getPW2", "getPW3", "getPW4", "getPW5", "getPW6", "getPW7", "getPW8",
+    "getPA1",
+    "getPA2",
+    "getPA3",
+    "getPA4",
+    "getPA5",
+    "getPA6",
+    "getPA7",
+    "getPA8",
+    "getPB1",
+    "getPB2",
+    "getPB3",
+    "getPB4",
+    "getPB5",
+    "getPB6",
+    "getPB7",
+    "getPB8",
+    "getPF1",
+    "getPF2",
+    "getPF3",
+    "getPF4",
+    "getPF5",
+    "getPF6",
+    "getPF7",
+    "getPF8",
+    "getPM1",
+    "getPM2",
+    "getPM3",
+    "getPM4",
+    "getPM5",
+    "getPM6",
+    "getPM7",
+    "getPM8",
+    "getPN1",
+    "getPN2",
+    "getPN3",
+    "getPN4",
+    "getPN5",
+    "getPN6",
+    "getPN7",
+    "getPN8",
+    "getPR1",
+    "getPR2",
+    "getPR3",
+    "getPR4",
+    "getPR5",
+    "getPR6",
+    "getPR7",
+    "getPR8",
+    "getPT1",
+    "getPT2",
+    "getPT3",
+    "getPT4",
+    "getPT5",
+    "getPT6",
+    "getPT7",
+    "getPT8",
+    "getPV1",
+    "getPV2",
+    "getPV3",
+    "getPV4",
+    "getPV5",
+    "getPV6",
+    "getPV7",
+    "getPV8",
+    "getPW1",
+    "getPW2",
+    "getPW3",
+    "getPW4",
+    "getPW5",
+    "getPW6",
+    "getPW7",
+    "getPW8",
     "getPRF",
+    "getPRN",
     # --- Filter ---
-    "getFCO", "getPST",
+    "getFCO",
+    "getPST",
     # --- Maintenance ---
     "getDWF",
     # --- Device Info & Diagnostics (Lex10-only language field confirmed here) ---
-    "getCDE", "getCNA", "getDGW", "getFIR", "getIPA", "getLAN", "getMAC", "getMAN",
-    "getSRN", "getTYP", "getVER",
+    "getCNA",
+    "getDGW",
+    "getFIR",
+    "getIPA",
+    "getLAN",
+    "getMAC",
+    "getMAN",
+    "getSRN",
+    "getTMZ",
+    "getTYP",
+    "getVER",
     # --- Wi-Fi (optional module, same as the plain "lex"/lexplus10s siblings) ---
-    "getAPT", "getEGW", "getEIP", "getMAC1", "getMAC2", "getWFC", "getWFR", "getWFS",
-    "getWGW", "getWIP",
+    "getAPT",
+    "getEGW",
+    "getEIP",
+    "getMAC1",
+    "getMAC2",
+    "getWFC",
+    "getWFR",
+    "getWFS",
+    "getWGW",
+    "getWIP",
 }
 
-SELECT_KNOWN_KEYS = {
-    "getIWH", "getOWH", "getRPD", "getRTM", "getSV1", "getPRF",
+SELECT_SUPPORTED_KEYS = {
+    "getIWH",
+    "getOWH",
+    "getRPD",
+    "getRTM",
+    "getSV1",
+    "getPRF",
 }
 
 # getBUZ present but empty in the fixture - no confirmed buzzer on this model.
-SWITCH_KNOWN_KEYS: set[str] = set()
-BINARY_SENSOR_KNOWN_KEYS: set[str] = set()
+SWITCH_SUPPORTED_KEYS: set[str] = set()
+BINARY_SENSOR_SUPPORTED_KEYS = {
+    "get71",
+    "getBSA",
+}
 
 # setWRN excluded - no getWRN in the fixture. setDEX excluded - no getDSV in
 # the fixture, despite getDBD/getDRP/getNPS being present.
-BUTTON_KNOWN_KEYS = {
-    "setSIR", "setALA", "setNOT",
+BUTTON_SUPPORTED_KEYS = {
+    "setSIR",
+    "setALA",
+    "setNOT",
 }
 
 # getAB (valve shutoff control) kept - this model genuinely controls a valve.
-VALVE_KNOWN_KEYS = {
+VALVE_SUPPORTED_KEYS = {
     "getAB",
 }
+
+# Alarm codes of the LEX Plus 10 SL (raw API getALA -> internal translation key).
+# Longer than the table of the other LEX devices (lex.ALA_CODES), and the codes 2-5
+# mean something else there.
+ALA_CODES = {
+    "0": "no_alarm",
+    "LOWSALT": "alarm_salt_supply_low",
+    "NOSALT": "alarm_salt_supply_empty",
+    "1": "alarm_salt_supply_empty",
+    "2": "alarm_chlor_generator_fault",
+    "3": "alarm_valve_malfunction",
+    "4": "alarm_pressure_too_low",
+    "5": "alarm_pressure_too_high",
+    "6": "alarm_brine_level_low",
+    "7": "alarm_brine_level_high",
+    "11": "alarm_end_switch",
+    "12": "alarm_no_network_connection",
+    "13": "alarm_leakage_volume_reached",
+    "14": "alarm_leakage_time_reached",
+    "15": "alarm_max_flow_rate_reached",
+    "16": "alarm_microleakage_detected",
+    "17": "alarm_external_sensor_leakage_radio",
+    "18": "alarm_turbine_blocked",
+    "19": "alarm_pressure_sensor_faulty",
+    "20": "alarm_temperature_sensor_faulty",
+    "21": "fault_conductance_sensor",
+    "23": "alarm_leakage_volume_approaching",
+}
+
+
+PROFILE = SyrConnectDeviceProfile(
+    ala_codes=ALA_CODES,
+    binary_sensor=BINARY_SENSOR_SUPPORTED_KEYS,
+    button=BUTTON_SUPPORTED_KEYS,
+    select=SELECT_SUPPORTED_KEYS,
+    sensor=SENSOR_SUPPORTED_KEYS,
+    sensor_factors={
+        "getFLO": 60,
+    },
+    switch=SWITCH_SUPPORTED_KEYS,
+    valve=VALVE_SUPPORTED_KEYS,
+    whu_units=WHU_UNITS_LEX,
+)

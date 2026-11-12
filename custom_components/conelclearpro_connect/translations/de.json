@@ -1,19 +1,15 @@
 {
   "config": {
     "abort": {
-      "already_configured": "Dieser Hub ist bereits konfiguriert",
-      "reauth_failed": "Erneute Authentifizierung fehlgeschlagen. Bitte versuchen Sie es erneut.",
-      "reauth_successful": "Erneute Authentifizierung erfolgreich",
-      "reconfigure_failed": "Neukonfiguration fehlgeschlagen. Bitte versuchen Sie es erneut.",
-      "reconfigure_successful": "Neukonfiguration erfolgreich"
+      "already_configured": "Dieser Hub ist bereits konfiguriert"
     },
     "error": {
-      "cannot_connect": "Verbindung zum Dienst nicht möglich. Bitte überprüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.",
-      "cannot_connect_local": "Verbindung zum lokalen Gerät nicht möglich. Bitte überprüfen Sie, ob die IP-Adresse korrekt ist und das Gerät eingeschaltet und mit Ihrem lokalen Netzwerk verbunden ist.",
-      "host_invalid": "Ungültiger Host. Geben Sie eine gültige IP-Adresse oder einen Hostnamen ein (keine Leerzeichen, keine Portnummer).",
-      "host_no_port": "Der Host darf keine Portnummer enthalten. Geben Sie nur die IP-Adresse oder den Hostnamen ein.",
-      "invalid_auth": "Ungültiger Benutzername oder Passwort. Bitte überprüfen Sie Ihre Anmeldedaten.",
-      "unknown": "Ein unerwarteter Fehler ist aufgetreten. Bitte versuchen Sie es später erneut."
+      "cannot_connect": "Verbindung zum Dienst nicht möglich. Die Internetverbindung muss geprüft werden.",
+      "cannot_connect_local": "Verbindung zum lokalen Gerät nicht möglich. Die IP-Adresse muss korrekt sein, und das Gerät muss eingeschaltet und mit dem lokalen Netzwerk verbunden sein.",
+      "host_invalid": "Ungültiger Host. Eine gültige IP-Adresse oder ein Hostname ist erforderlich.",
+      "host_no_port": "Der Host darf keine Portnummer enthalten. Nur die IP-Adresse oder der Hostname ist zulässig.",
+      "invalid_auth": "Ungültiger Benutzername oder Passwort. Die Anmeldedaten müssen geprüft werden.",
+      "unknown": "Ein unerwarteter Fehler ist aufgetreten. Der Vorgang kann später wiederholt werden."
     },
     "step": {
       "api_json": {
@@ -22,7 +18,7 @@
           "model": "Gerätemodell"
         },
         "description": "Geben Sie Modell und Hostname/IP für den lokalen Zugriff ein",
-        "title": "ConelClearPro API Connect (Lokal)"
+        "title": "ConelClearPro Agent (Lokal)"
       },
       "api_xml": {
         "data": {
@@ -31,7 +27,7 @@
           "username": "Benutzername"
         },
         "description": "Geben Sie Ihre App-Anmeldedaten für den Cloud-Zugriff ein",
-        "title": "ConelClearPro API Connect (Cloud)"
+        "title": "ConelClearPro Agent (Cloud)"
       },
       "reauth_confirm": {
         "data": {
@@ -39,7 +35,19 @@
           "username": "Benutzername"
         },
         "description": "Die Anmeldedaten für {username} sind nicht mehr gültig. Bitte geben Sie neue Anmeldedaten ein.",
-        "title": "ConelClearPro API Connect erneut authentifizieren"
+        "title": "ConelClearPro Agent erneut authentifizieren"
+      },
+      "reauth_confirm_local": {
+        "data": {
+          "host": "Hostname oder IP-Adresse",
+          "model": "Gerätemodell"
+        },
+        "data_description": {
+          "host": "IP-Adresse oder Hostname des Geräts im lokalen Netzwerk, ohne Port.",
+          "model": "Modell des Geräts auswählen. Davon hängt die Adresse seiner lokalen API ab."
+        },
+        "description": "Das Gerät unter {host} hat die Verbindung abgelehnt. Gerätemodell und Hostname oder IP-Adresse müssen geprüft werden.",
+        "title": "ConelClearPro Agent (Lokal) neu verbinden"
       },
       "reconfigure": {
         "data": {
@@ -50,13 +58,13 @@
           "username": "Benutzername"
         },
         "description": "Aktualisieren Sie Ihre Einstellungen.",
-        "title": "ConelClearPro API Connect neu konfigurieren"
+        "title": "ConelClearPro Agent neu konfigurieren"
       },
       "user": {
-        "description": "Wählen Sie, wie Sie sich mit Ihrem ConelClearPro-Gerät verbinden möchten:\n\n- **Cloud-Zugriff**: Verwenden Sie Ihre App-Anmeldedaten, um über den SYR-Cloud-Dienst auf alle Ihre Geräte zuzugreifen. Dies benötigt eine Internetverbindung.\n\n- **Lokaler Zugriff**: Verbinden Sie sich direkt mit einem Gerät in Ihrem lokalen Netzwerk über dessen IP-Adresse. Dies funktioniert offline und bietet schnellere Reaktionszeiten.",
+        "description": "Wählen Sie, wie Sie sich mit Ihrem SYR-Gerät verbinden möchten:\n\n- **Cloud-Zugriff**: Verwenden Sie Ihre App-Anmeldedaten, um über den SYR-Cloud-Dienst auf alle Ihre Geräte zuzugreifen. Dies benötigt eine Internetverbindung.\n\n- **Lokaler Zugriff**: Verbinden Sie sich direkt mit einem Gerät in Ihrem lokalen Netzwerk über dessen IP-Adresse. Dies funktioniert offline und bietet schnellere Reaktionszeiten.",
         "menu_options": {
-          "api_json": "Lokaler-Zugriff",
-          "api_xml": "Cloud-Zugriff"
+          "api_json": "Lokal",
+          "api_xml": "Cloud"
         },
         "title": "ConelClearPro API Connect"
       }
@@ -64,12 +72,60 @@
   },
   "entity": {
     "binary_sensor": {
+      "get71": {
+        "name": "Leckageschutz",
+        "state": {
+          "false": "Aktiv",
+          "true": "Deaktiviert"
+        }
+      },
+      "getbsa": {
+        "name": "Bodensensor-Überwachung",
+        "state": {
+          "false": "Deaktiviert",
+          "true": "Aktiv"
+        }
+      },
       "getbuz": {
         "name": "Signalton bei Alarm",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
+      },
+      "getcsd": {
+        "name": "Leitfähigkeitssensor",
+        "state": {
+          "false": "Deaktiviert",
+          "true": "Aktiv"
+        }
+      },
+      "getids": {
+        "name": "Sommerzeit",
+        "state": {
+          "false": "Deaktiviert",
+          "true": "Aktiviert"
+        }
+      },
+      "getpsd": {
+        "name": "Drucksensor",
+        "state": {
+          "false": "Deaktiviert",
+          "true": "Aktiv"
+        }
+      },
+      "getsfv": {
+        "name": "Firmware-Prüfung"
+      },
+      "gettsd": {
+        "name": "Temperatursensor",
+        "state": {
+          "false": "Deaktiviert",
+          "true": "Aktiv"
+        }
+      },
+      "getvto": {
+        "name": "Ventiltest"
       }
     },
     "button": {
@@ -82,14 +138,8 @@
       "setnot": {
         "name": "Benachrichtigung zurücksetzen"
       },
-      "setrst": {
-        "name": "Gerät zurücksetzen"
-      },
       "setsir": {
         "name": "Sofort regenerieren"
-      },
-      "setsmr": {
-        "name": "Mehrfach regenerieren"
       },
       "setwrn": {
         "name": "Warnung zurücksetzen"
@@ -100,7 +150,10 @@
         "name": "Alarmdauer"
       },
       "getcrs": {
-        "name": "Kartuschengröße"
+        "name": "Kartuschengröße",
+        "state": {
+          "custom": "Benutzerdefiniert"
+        }
       },
       "getcrt": {
         "name": "Kartuschentyp",
@@ -110,6 +163,9 @@
           "2": "HVE+",
           "none": "Ohne"
         }
+      },
+      "getcwl": {
+        "name": "Warnschwelle der Restkapazität"
       },
       "getfcd": {
         "name": "Filterspülintervall",
@@ -128,6 +184,9 @@
           "7776000": "3 Monate"
         }
       },
+      "getfcs": {
+        "name": "Kartuschengröße (Benutzerdefiniert)"
+      },
       "getffm": {
         "name": "Filtertyp",
         "state": {
@@ -137,6 +196,12 @@
           "3": "Ohne Filter"
         }
       },
+      "getfmt": {
+        "name": "Maximale Fülldauer (Erstbefüllung)"
+      },
+      "getfvt": {
+        "name": "Maximale Füllmenge (Erstbefüllung)"
+      },
       "getiwh": {
         "name": "Rohwasserhärte"
       },
@@ -144,7 +209,7 @@
         "name": "Maximale Ausgangsleitfähigkeit"
       },
       "getmih": {
-        "name": "Luftfeuchtigkeit (minimal)",
+        "name": "Luftfeuchtigkeit (Minimal)",
         "state": {
           "0": "Aus",
           "10": "10 %",
@@ -169,7 +234,7 @@
         }
       },
       "getmit": {
-        "name": "Temperatur (minimal)",
+        "name": "Temperatur (Minimal)",
         "state": {
           "0": "0 °C",
           "10": "1 °C",
@@ -255,7 +320,7 @@
         }
       },
       "getmxh": {
-        "name": "Luftfeuchtigkeit (maximal)",
+        "name": "Luftfeuchtigkeit (Maximal)",
         "state": {
           "10": "10 %",
           "100": "Aus",
@@ -280,7 +345,7 @@
         }
       },
       "getmxt": {
-        "name": "Temperatur (maximal)",
+        "name": "Temperatur (Maximal)",
         "state": {
           "10": "1 °C",
           "100": "10 °C",
@@ -342,14 +407,14 @@
         "name": "Weichwasserhärte"
       },
       "getprf": {
-        "name": "Aktives Leckagesschutz-Profil",
+        "name": "Aktives Leckageschutz-Profil",
         "state": {
           "1": "Anwesend",
           "2": "Abwesend"
         }
       },
       "getrcd": {
-        "name": "Zeitraum Füllungen",
+        "name": "Zeitraum der Füllungen",
         "state": {
           "0": "Stunde",
           "1": "Tag",
@@ -412,13 +477,13 @@
         }
       },
       "getsv1": {
-        "name": "Salzmenge Behälter 1"
+        "name": "Salzmenge in Behälter 1"
       },
       "getsv2": {
-        "name": "Salzmenge Behälter 2"
+        "name": "Salzmenge in Behälter 2"
       },
       "getsv3": {
-        "name": "Salzmenge Behälter 3"
+        "name": "Salzmenge in Behälter 3"
       },
       "gettpr": {
         "name": "Solldruck"
@@ -465,6 +530,7 @@
           "alarm_cartridge_exhausted_capacity": "Kartusche erschöpft (Kapazität)",
           "alarm_cartridge_exhausted_conductivity": "Kartusche erschöpft (Leitwertanstieg)",
           "alarm_chlor_generator_fault": "Störung Chlorgenerator!",
+          "alarm_conductivity_too_high": "Leitfähigkeit zu hoch",
           "alarm_end_switch": "Endschalter",
           "alarm_external_sensor_leakage_cable": "EXT. SENSOR LECKAGE KABEL",
           "alarm_external_sensor_leakage_radio": "EXT. SENSOR LECKAGE FUNK",
@@ -480,6 +546,7 @@
           "alarm_microleakage_detected": "Mikroleckage erkannt!",
           "alarm_motor_current_exceeded": "Motorstrom-Grenzwert überschritten!",
           "alarm_no_network_connection": "Störung Netzwerkverbindung",
+          "alarm_no_power_supply": "Keine Stromversorgung",
           "alarm_pressure_sensor_faulty": "Drucksensor fehlerhaft!",
           "alarm_pressure_too_high": "Vordruck zu hoch",
           "alarm_pressure_too_low": "Vordruck zu niedrig",
@@ -489,7 +556,7 @@
           "alarm_safefloor_high_temperature": "Temperatur überschritten",
           "alarm_safefloor_low_humidity": "Luftfeuchtigkeit unterschritten",
           "alarm_safefloor_low_temperature": "Temperatur unterschritten",
-          "alarm_safefloor_weather": "Störung Temperatursensor",
+          "alarm_safefloor_weather": "Störung Temperatur- und Luftfeuchtigkeitssensor",
           "alarm_safet_absence_leakage_detected": "Abwesenheits-Leckage erkannt. Volumen überschritten",
           "alarm_safet_flow_leakage_detected": "Durchfluss-Leckage: Volumenstrom > 3500 l/h erkannt",
           "alarm_safet_flow_time_exceeded": "Zeitkriterium des Durchflusses überschritten.",
@@ -497,7 +564,8 @@
           "alarm_safet_microleakage_detected": "Mikroleckage erkannt. Grenzwert überschritten",
           "alarm_safet_turbine_no_signal": "Kein Turbinen-Signal",
           "alarm_safet_valve_cannot_be_operated": "Absperrung kann nicht betätigt werden",
-          "alarm_salt_supply_empty": "Salzversorgung leer",
+          "alarm_salt_supply_empty": "Salzvorrat leer",
+          "alarm_salt_supply_low": "Salzvorrat gering",
           "alarm_target_pressure_unreachable": "Solldruck kann nicht erreicht werden!",
           "alarm_temperature_sensor_faulty": "Temperatursensor fehlerhaft!",
           "alarm_turbine_blocked": "Turbine blockiert!",
@@ -514,9 +582,57 @@
       "getalm": {
         "name": "Letzte Alarme",
         "state": {
-          "low_salt": "Salz gering",
-          "no_alarm": "Kein Alarm",
-          "no_salt": "Salz leer"
+          "alarm_battery_low": "Batterien leer",
+          "alarm_battery_weak": "Batterien schwach",
+          "alarm_brine_level_high": "Salzbehälter-Füllstand zu hoch",
+          "alarm_brine_level_low": "Salzbehälter-Füllstand zu niedrig",
+          "alarm_cartridge_exhausted_capacity": "Kartusche erschöpft (Kapazität)",
+          "alarm_cartridge_exhausted_conductivity": "Kartusche erschöpft (Leitwertanstieg)",
+          "alarm_chlor_generator_fault": "Störung Chlorgenerator!",
+          "alarm_conductivity_too_high": "Leitfähigkeit zu hoch",
+          "alarm_end_switch": "Endschalter",
+          "alarm_external_sensor_leakage_cable": "EXT. SENSOR LECKAGE KABEL",
+          "alarm_external_sensor_leakage_radio": "EXT. SENSOR LECKAGE FUNK",
+          "alarm_fill_cycles_exceeded": "Füllzyklen überschritten!",
+          "alarm_flow_sensor_fault": "Störung Durchflusssensor!",
+          "alarm_heating_fill_time_leak": "Zeitleckage Heizungsbefüllung!",
+          "alarm_heating_fill_volume_leak": "Volumenleckage Heizungsbefüllung!",
+          "alarm_increased_water_hardness": "Erhöhte Wasserhärte",
+          "alarm_leakage_time_reached": "Leckzeit erreicht!",
+          "alarm_leakage_volume_approaching": "Leckvolumen nähert sich Grenzwert",
+          "alarm_leakage_volume_reached": "Leckvolumen erreicht!",
+          "alarm_max_flow_rate_reached": "Maximaler Durchfluss erreicht!",
+          "alarm_microleakage_detected": "Mikroleckage erkannt!",
+          "alarm_motor_current_exceeded": "Motorstrom-Grenzwert überschritten!",
+          "alarm_no_network_connection": "Störung Netzwerkverbindung",
+          "alarm_no_power_supply": "Keine Stromversorgung",
+          "alarm_pressure_sensor_faulty": "Drucksensor fehlerhaft!",
+          "alarm_pressure_too_high": "Vordruck zu hoch",
+          "alarm_pressure_too_low": "Vordruck zu niedrig",
+          "alarm_safefloor_communication": "Störung Netzwerkverbindung",
+          "alarm_safefloor_flood": "Eine Leckage am Bodensensor wurde erkannt",
+          "alarm_safefloor_high_humidity": "Luftfeuchtigkeit überschritten",
+          "alarm_safefloor_high_temperature": "Temperatur überschritten",
+          "alarm_safefloor_low_humidity": "Luftfeuchtigkeit unterschritten",
+          "alarm_safefloor_low_temperature": "Temperatur unterschritten",
+          "alarm_safefloor_weather": "Störung Temperatur- und Luftfeuchtigkeitssensor",
+          "alarm_safet_absence_leakage_detected": "Abwesenheits-Leckage erkannt. Volumen überschritten",
+          "alarm_safet_flow_leakage_detected": "Durchfluss-Leckage: Volumenstrom > 3500 l/h erkannt",
+          "alarm_safet_flow_time_exceeded": "Zeitkriterium des Durchflusses überschritten.",
+          "alarm_safet_leakage_volume_reached": "Anwesenheits-Leckage erkannt. Volumen überschritten",
+          "alarm_safet_microleakage_detected": "Mikroleckage erkannt. Grenzwert überschritten",
+          "alarm_safet_turbine_no_signal": "Kein Turbinen-Signal",
+          "alarm_safet_valve_cannot_be_operated": "Absperrung kann nicht betätigt werden",
+          "alarm_salt_supply_empty": "Salzvorrat leer",
+          "alarm_salt_supply_low": "Salzvorrat gering",
+          "alarm_target_pressure_unreachable": "Solldruck kann nicht erreicht werden!",
+          "alarm_temperature_sensor_faulty": "Temperatursensor fehlerhaft!",
+          "alarm_turbine_blocked": "Turbine blockiert!",
+          "alarm_valve_malfunction": "Ventilmechanismus defekt",
+          "alarm_valve_position": "Ventilstellung",
+          "error_no_information": "Fehler: keine Informationen verfügbar",
+          "fault_conductance_sensor": "Leitfähigkeitssensor fehlerhaft!",
+          "no_alarm": "Kein Alarm"
         }
       },
       "getaln": {
@@ -543,11 +659,11 @@
       "getbat": {
         "name": "Batteriespannung"
       },
-      "getcde": {
-        "name": "Konfigurationscode"
-      },
       "getcel": {
         "name": "Temperatur"
+      },
+      "getcfo": {
+        "name": "Zyklus-Durchflussversatz"
       },
       "getcft": {
         "name": "Aktuelle Fülldauer"
@@ -561,17 +677,28 @@
       "getcnd": {
         "name": "Wasserleitfähigkeit"
       },
-      "getcno": {
-        "name": "Codenummer"
+      "getcnd_class": {
+        "name": "Wasserhärtebereich",
+        "state": {
+          "hard": "Hart",
+          "medium": "Mittel",
+          "soft": "Weich"
+        }
+      },
+      "getcnf": {
+        "name": "Leitfähigkeitsfaktor"
+      },
+      "getcnl": {
+        "name": "Leitfähigkeitsgrenzwert"
       },
       "getcoa": {
-        "name": "Zähler automatische Rückspülungen"
+        "name": "Zähler automatischer Rückspülungen"
       },
       "getcof": {
-        "name": "Wasserverbrauch Gesamt"
+        "name": "Wasserverbrauch (Gesamt)"
       },
       "getcom": {
-        "name": "Zähler manuelle Rückspülungen"
+        "name": "Zähler manueller Rückspülungen"
       },
       "getcrs": {
         "name": "Kartuschengröße"
@@ -586,25 +713,31 @@
         }
       },
       "getcs1": {
-        "name": "Restkapazität des Harzes 1"
+        "name": "Restkapazität des Harzes in Behälter 1"
       },
       "getcs2": {
-        "name": "Restkapazität des Harzes 2"
+        "name": "Restkapazität des Harzes in Behälter 2"
       },
       "getcs3": {
-        "name": "Restkapazität des Harzes 3"
+        "name": "Restkapazität des Harzes in Behälter 3"
+      },
+      "getcwl": {
+        "name": "Warnschwelle der Restkapazität"
       },
       "getcyn": {
-        "name": "Regenerationszyklen Anzahl"
+        "name": "Regenerationszyklen (Anzahl)"
       },
       "getcyt": {
-        "name": "Regenerationszyklen Zeit"
+        "name": "Regenerationszyklus (Restzeit)"
       },
       "getdbd": {
         "name": "Druckabfall beim Lecktest"
       },
-      "getden": {
-        "name": "Gerät aktiviert"
+      "getdbt": {
+        "name": "Mikroleckage-Test-Druckabfallzeit"
+      },
+      "getdcm": {
+        "name": "Mikroleckage-Test-Schließzeit"
       },
       "getdfm": {
         "name": "Gerätefunktionen",
@@ -622,29 +755,43 @@
       "getdma": {
         "name": "Mikroleckage-Alarmmodus",
         "state": {
+          "0": "Deaktiviert",
           "1": "Warnung",
           "2": "Alarm"
         }
       },
+      "getdom": {
+        "name": "Mikroleckage-Test-Öffnungszeit"
+      },
+      "getdpl": {
+        "name": "Mikroleckage-Test-Turbinenimpulse"
+      },
       "getdrp": {
-        "name": "Mikroleckage-Test Intervall",
+        "name": "Mikroleckage-Test-Intervall",
         "state": {
+          "0": "Immer",
           "1": "Täglich",
           "2": "Wöchentlich",
           "3": "Monatlich"
         }
+      },
+      "getdst": {
+        "name": "Mikroleckage-Test-Wartezeit ohne Durchfluss"
       },
       "getdsv": {
         "name": "Mikroleckage-Test",
         "state": {
           "0": "Inaktiv",
           "1": "Aktiv",
-          "2": "Abgebrochen - Druckabfall",
+          "2": "Abgebrochen (Druckabfall)",
           "3": "Übersprungen"
         }
       },
+      "getdtc": {
+        "name": "Mikroleckage-Test-Prüfzyklen"
+      },
       "getdtt": {
-        "name": "Mikroleckage-Test Zeit"
+        "name": "Mikroleckage-Test-Zeit"
       },
       "getdwf": {
         "name": "Erwarteter täglicher Wasserverbrauch"
@@ -675,6 +822,9 @@
       "getfco": {
         "name": "Eisengehalt"
       },
+      "getfcs": {
+        "name": "Kartuschengröße (Benutzerdefiniert)"
+      },
       "getffm": {
         "name": "Filtertyp",
         "state": {
@@ -690,11 +840,17 @@
       "getflo": {
         "name": "Wasserdurchfluss"
       },
+      "getfmt": {
+        "name": "Maximale Fülldauer (Erstbefüllung)"
+      },
+      "getfvt": {
+        "name": "Maximale Füllmenge (Erstbefüllung)"
+      },
       "gethmd": {
         "name": "Luftfeuchtigkeit"
       },
       "getinr": {
-        "name": "Regenerationen (unvollständig)"
+        "name": "Regenerationen (Unvollständig)"
       },
       "getipa": {
         "name": "IP-Adresse"
@@ -714,7 +870,7 @@
         "name": "Letzte Regeneration"
       },
       "getle": {
-        "name": "Leckageschutz - Stufe Anwesend"
+        "name": "Leckageschutz-Stufe (Anwesend)"
       },
       "getlft": {
         "name": "Letzte Nachfülldauer"
@@ -726,7 +882,10 @@
         "name": "Gerätesprache",
         "state": {
           "0": "Deutsch",
-          "1": "Englisch"
+          "1": "Englisch",
+          "2": "Spanisch",
+          "3": "Italienisch",
+          "4": "Polnisch"
         }
       },
       "getlot": {
@@ -738,29 +897,32 @@
       "getltv": {
         "name": "Letztes gezapftes Volumen"
       },
+      "getlwt": {
+        "name": "Leckage-Warnschwellwert"
+      },
       "getmac": {
-        "name": "MAC Adresse"
+        "name": "MAC-Adresse"
       },
       "getmac1": {
-        "name": "MAC Adresse (WLAN)"
+        "name": "MAC-Adresse (WLAN)"
       },
       "getmac2": {
-        "name": "MAC Adresse (LAN)"
+        "name": "MAC-Adresse (LAN)"
       },
       "getman": {
         "name": "Hersteller"
       },
       "getmih": {
-        "name": "Luftfeuchtigkeit (minimal)"
+        "name": "Luftfeuchtigkeit (Minimal)"
       },
       "getmit": {
-        "name": "Temperatur (minimal)"
+        "name": "Temperatur (Minimal)"
       },
       "getmxh": {
-        "name": "Luftfeuchtigkeit (maximal)"
+        "name": "Luftfeuchtigkeit (Maximal)"
       },
       "getmxt": {
-        "name": "Temperatur (maximal)"
+        "name": "Temperatur (Maximal)"
       },
       "getnet": {
         "name": "Netzspannung"
@@ -782,8 +944,8 @@
           "bi_annual_maintenance": "Halbjährliche Wartung",
           "filter_maintenance_reminder": "Erinnerung Filterwartung",
           "filter_service_reminder": "Erinnerung Filterservice",
-          "new_software_available": "Neues Software Update verfügbar!",
-          "new_software_installed": "Neues Software Update installiert!",
+          "new_software_available": "Neues Software-Update verfügbar!",
+          "new_software_installed": "Neues Software-Update installiert!",
           "no_notification": "Keine"
         }
       },
@@ -791,7 +953,7 @@
         "name": "Keine Turbinenimpulse seit"
       },
       "getnpt": {
-        "name": "Zeit bis Alarm Durchflusssensor aktiv wird"
+        "name": "Zeit bis der Durchflusssensor-Alarm aktiv wird"
       },
       "getnrt": {
         "name": "Keine Nachfüllung seit"
@@ -803,112 +965,112 @@
         "name": "Weichwasserhärte"
       },
       "getpa1": {
-        "name": "Leckagesschutz-Profil 1",
+        "name": "Leckageschutz-Profil 1",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpa2": {
-        "name": "Leckagesschutz-Profil 2",
+        "name": "Leckageschutz-Profil 2",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpa3": {
-        "name": "Leckagesschutz-Profil 3",
+        "name": "Leckageschutz-Profil 3",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpa4": {
-        "name": "Leckagesschutz-Profil 4",
+        "name": "Leckageschutz-Profil 4",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpa5": {
-        "name": "Leckagesschutz-Profil 5",
+        "name": "Leckageschutz-Profil 5",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpa6": {
-        "name": "Leckagesschutz-Profil 6",
+        "name": "Leckageschutz-Profil 6",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpa7": {
-        "name": "Leckagesschutz-Profil 7",
+        "name": "Leckageschutz-Profil 7",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpa8": {
-        "name": "Leckagesschutz-Profil 8",
+        "name": "Leckageschutz-Profil 8",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpb1": {
-        "name": "Summer Profil 1",
+        "name": "Summer (Profil 1)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpb2": {
-        "name": "Summer Profil 2",
+        "name": "Summer (Profil 2)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpb3": {
-        "name": "Summer Profil 3",
+        "name": "Summer (Profil 3)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpb4": {
-        "name": "Summer Profil 4",
+        "name": "Summer (Profil 4)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpb5": {
-        "name": "Summer Profil 5",
+        "name": "Summer (Profil 5)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpb6": {
-        "name": "Summer Profil 6",
+        "name": "Summer (Profil 6)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpb7": {
-        "name": "Summer Profil 7",
+        "name": "Summer (Profil 7)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpb8": {
-        "name": "Summer Profil 8",
+        "name": "Summer (Profil 8)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
@@ -939,118 +1101,121 @@
         "name": "Durchflussleckage-Schwellwert 8"
       },
       "getpm1": {
-        "name": "Mikroleckage-Test Profil 1",
+        "name": "Mikroleckage-Test (Profil 1)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpm2": {
-        "name": "Mikroleckage-Test Profil 2",
+        "name": "Mikroleckage-Test (Profil 2)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpm3": {
-        "name": "Mikroleckage-Test Profil 3",
+        "name": "Mikroleckage-Test (Profil 3)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpm4": {
-        "name": "Mikroleckage-Test Profil 4",
+        "name": "Mikroleckage-Test (Profil 4)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpm5": {
-        "name": "Mikroleckage-Test Profil 5",
+        "name": "Mikroleckage-Test (Profil 5)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpm6": {
-        "name": "Mikroleckage-Test Profil 6",
+        "name": "Mikroleckage-Test (Profil 6)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpm7": {
-        "name": "Mikroleckage-Test Profil 7",
+        "name": "Mikroleckage-Test (Profil 7)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpm8": {
-        "name": "Mikroleckage-Test Profil 8",
+        "name": "Mikroleckage-Test (Profil 8)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpn1": {
-        "name": "Leckagesschutz-Profil Name 1"
+        "name": "Leckageschutz-Profilname 1"
       },
       "getpn2": {
-        "name": "Leckagesschutz-Profil Name 2"
+        "name": "Leckageschutz-Profilname 2"
       },
       "getpn3": {
-        "name": "Leckagesschutz-Profil Name 3"
+        "name": "Leckageschutz-Profilname 3"
       },
       "getpn4": {
-        "name": "Leckagesschutz-Profil Name 4"
+        "name": "Leckageschutz-Profilname 4"
       },
       "getpn5": {
-        "name": "Leckagesschutz-Profil Name 5"
+        "name": "Leckageschutz-Profilname 5"
       },
       "getpn6": {
-        "name": "Leckagesschutz-Profil Name 6"
+        "name": "Leckageschutz-Profilname 6"
       },
       "getpn7": {
-        "name": "Leckagesschutz-Profil Name 7"
+        "name": "Leckageschutz-Profilname 7"
       },
       "getpn8": {
-        "name": "Leckagesschutz-Profil Name 8"
+        "name": "Leckageschutz-Profilname 8"
       },
       "getpr1": {
-        "name": "Rückkehrzeit 1 zu Anwesend-Profil"
+        "name": "Rückkehrzeit zum Anwesend-Profil (Profil 1)"
       },
       "getpr2": {
-        "name": "Rückkehrzeit 2 zu Anwesend-Profil"
+        "name": "Rückkehrzeit zum Anwesend-Profil (Profil 2)"
       },
       "getpr3": {
-        "name": "Rückkehrzeit 3 zu Anwesend-Profil"
+        "name": "Rückkehrzeit zum Anwesend-Profil (Profil 3)"
       },
       "getpr4": {
-        "name": "Rückkehrzeit 4 zu Anwesend-Profil"
+        "name": "Rückkehrzeit zum Anwesend-Profil (Profil 4)"
       },
       "getpr5": {
-        "name": "Rückkehrzeit 5 zu Anwesend-Profil"
+        "name": "Rückkehrzeit zum Anwesend-Profil (Profil 5)"
       },
       "getpr6": {
-        "name": "Rückkehrzeit 6 zu Anwesend-Profil"
+        "name": "Rückkehrzeit zum Anwesend-Profil (Profil 6)"
       },
       "getpr7": {
-        "name": "Rückkehrzeit 7 zu Anwesend-Profil"
+        "name": "Rückkehrzeit zum Anwesend-Profil (Profil 7)"
       },
       "getpr8": {
-        "name": "Rückkehrzeit 8 zu Anwesend-Profil"
+        "name": "Rückkehrzeit zum Anwesend-Profil (Profil 8)"
       },
       "getprc": {
         "name": "Restkapazitätsgrad"
       },
       "getprf": {
-        "name": "Aktives Leckagesschutz-Profil",
+        "name": "Aktives Leckageschutz-Profil",
         "state": {
           "1": "Anwesend",
           "2": "Abwesend"
         }
+      },
+      "getprn": {
+        "name": "Anzahl der Leckageschutz-Profile"
       },
       "getprs": {
         "name": "Eingangsdruck"
@@ -1111,56 +1276,56 @@
         "name": "Volumenleckageschwellwert 8"
       },
       "getpw1": {
-        "name": "Leckagewarnung Profil 1",
+        "name": "Leckagewarnung (Profil 1)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpw2": {
-        "name": "Leckagewarnung Profil 2",
+        "name": "Leckagewarnung (Profil 2)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpw3": {
-        "name": "Leckagewarnung Profil 3",
+        "name": "Leckagewarnung (Profil 3)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpw4": {
-        "name": "Leckagewarnung Profil 4",
+        "name": "Leckagewarnung (Profil 4)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpw5": {
-        "name": "Leckagewarnung Profil 5",
+        "name": "Leckagewarnung (Profil 5)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpw6": {
-        "name": "Leckagewarnung Profil 6",
+        "name": "Leckagewarnung (Profil 6)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpw7": {
-        "name": "Leckagewarnung Profil 7",
+        "name": "Leckagewarnung (Profil 7)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
       },
       "getpw8": {
-        "name": "Leckagewarnung Profil 8",
+        "name": "Leckagewarnung (Profil 8)",
         "state": {
           "false": "Deaktiviert",
           "true": "Aktiviert"
@@ -1170,7 +1335,7 @@
         "name": "Anzahl der Füllzyklen"
       },
       "getrcd": {
-        "name": "Zeitraum Füllungen",
+        "name": "Zeitraum der Füllungen",
         "state": {
           "0": "Stunde",
           "1": "Tag",
@@ -1180,7 +1345,7 @@
         }
       },
       "getrcn": {
-        "name": "Gesamtzahl Nachfüllungen"
+        "name": "Gesamtzahl der Nachfüllungen"
       },
       "getrcp": {
         "name": "Synchronisationsintervall"
@@ -1189,31 +1354,31 @@
         "name": "Salzdosierung"
       },
       "getre1": {
-        "name": "Reserve Kapazität Flasche 1"
+        "name": "Reservekapazität in Flasche 1"
       },
       "getre2": {
-        "name": "Reserve Kapazität Flasche 2"
+        "name": "Reservekapazität in Flasche 2"
       },
       "getres": {
         "name": "Restkapazität"
       },
       "getrg1": {
-        "name": "Regeneration Status",
+        "name": "Regeneration-Status",
         "state": {
           "0": "keine Regeneration",
-          "1": "Behälter 1 regeneriert",
-          "2": "Behälter 2 regeneriert"
+          "1": "Regeneration in Behälter 1",
+          "2": "Regeneration in Behälter 2"
         }
       },
       "getrg2": {
-        "name": "Regeneration im Behälter 2",
+        "name": "Regeneration in Behälter 2",
         "state": {
           "0": "Inaktiv",
           "1": "Läuft"
         }
       },
       "getrg3": {
-        "name": "Regeneration im Behälter 3",
+        "name": "Regeneration in Behälter 3",
         "state": {
           "0": "Inaktiv",
           "1": "Läuft"
@@ -1252,9 +1417,6 @@
       "getrse": {
         "name": "Rückspülerinnerungsintervall"
       },
-      "getrth": {
-        "name": "Stunden der Regeneration"
-      },
       "getrti": {
         "name": "Gesamtdauer des Regenerationszyklus"
       },
@@ -1280,6 +1442,9 @@
       "getslf": {
         "name": "Durchfluss in Selbstlernphase"
       },
+      "getslo": {
+        "name": "Zuschlag in Selbstlernphase (Volumen und Zeit)"
+      },
       "getslp": {
         "name": "Dauer der Selbstlernphase"
       },
@@ -1288,6 +1453,12 @@
       },
       "getslv": {
         "name": "Volumen in Selbstlernphase"
+      },
+      "getsmf": {
+        "name": "Mindestdurchfluss in Selbstlernphase"
+      },
+      "getsof": {
+        "name": "Zuschlag in Selbstlernphase (Durchfluss)"
       },
       "getsre": {
         "name": "Regeneration aktiv",
@@ -1315,13 +1486,13 @@
         "name": "Nächste jährliche Wartung"
       },
       "getss1": {
-        "name": "Salzvorrat Behälter 1"
+        "name": "Salzvorrat in Behälter 1"
       },
       "getss2": {
-        "name": "Salzvorrat Behälter 2"
+        "name": "Salzvorrat in Behälter 2"
       },
       "getss3": {
-        "name": "Salzvorrat Behälter 3"
+        "name": "Salzvorrat in Behälter 3"
       },
       "getsta": {
         "name": "Status",
@@ -1340,25 +1511,28 @@
         }
       },
       "getsv1": {
-        "name": "Salzmenge Behälter 1"
+        "name": "Salzmenge in Behälter 1"
       },
       "getsv2": {
-        "name": "Salzmenge Behälter 2"
+        "name": "Salzmenge in Behälter 2"
       },
       "getsv3": {
-        "name": "Salzmenge Behälter 3"
+        "name": "Salzmenge in Behälter 3"
       },
       "gett1": {
         "name": "Zeitleckage 1"
       },
       "gett2": {
-        "name": "Zeitleckage 2"
+        "name": "Maximale Durchfluss-Leckzeit"
       },
       "gettmp": {
         "name": "Leckageschutz deaktiviert"
       },
+      "gettmz": {
+        "name": "Zeitzone"
+      },
       "gettor": {
-        "name": "Regenerationen (gesamt)"
+        "name": "Regenerationen (Gesamt)"
       },
       "gettpr": {
         "name": "Solldruck"
@@ -1369,11 +1543,14 @@
       "gettrv": {
         "name": "Gesamtes Nachfüllvolumen"
       },
+      "getttm": {
+        "name": "Maximale Zeit ohne Turbinenimpulse"
+      },
       "gettyp": {
         "name": "Gerätetyp"
       },
       "getul": {
-        "name": "Leckageschutz - Stufe Abwesend"
+        "name": "Leckageschutz-Stufe (Abwesend)"
       },
       "getver": {
         "name": "Firmware-Version"
@@ -1384,17 +1561,18 @@
           "10": "Geschlossen",
           "11": "Wird geschlossen",
           "20": "Geöffnet",
-          "21": "Wird geöffnet"
+          "21": "Wird geöffnet",
+          "30": "Abwesenheits-Leckage"
         }
       },
       "getvol": {
         "name": "Gesamtvolumen"
       },
       "getvps1": {
-        "name": "Keine Turbinenimpulse Steuerkopf 1 seit"
+        "name": "Keine Turbinenimpulse an Steuerkopf 1 seit"
       },
       "getvps2": {
-        "name": "Keine Turbinenimpulse Steuerkopf 2 seit"
+        "name": "Keine Turbinenimpulse an Steuerkopf 2 seit"
       },
       "getvs1": {
         "name": "Volumenschwelle 1"
@@ -1406,16 +1584,13 @@
         "name": "Volumenschwelle 3"
       },
       "getwfc": {
-        "name": "WLAN SSID"
-      },
-      "getwfl": {
-        "name": "Verfügbare Netzwerke"
+        "name": "WLAN-SSID"
       },
       "getwfr": {
-        "name": "WLAN Signalstärke"
+        "name": "WLAN-Signalstärke"
       },
       "getwfs": {
-        "name": "WLAN Verbindungsstatus",
+        "name": "WLAN-Verbindungsstatus",
         "state": {
           "0": "Nicht verbunden",
           "1": "Wird verbunden",
@@ -1441,18 +1616,25 @@
           "cartridge_almost_exhausted": "Kartusche annähernd erschöpft",
           "initial_filling": "Erstbefüllung",
           "leak_warning": "Leckagewarnung",
-          "leak_warning_time": "Leckagewarnung Zeit",
+          "leak_warning_time": "Leckagewarnung (Zeit)",
           "leak_warning_volume": "Volumenleckage",
           "microleakage_suspected": "Mikroleckageverdacht",
           "no_batteries_detected": "Keine Batterien eingelegt",
           "no_warning": "Keine Warnung",
           "outlet_pressure_too_high": "Ausgangsdruck zu hoch",
           "power_outage": "Stromunterbrechung",
-          "salt_supply_low": "Salzvorrat geht zur neige"
+          "salt_supply_low": "Salzvorrat gering"
         }
       }
     },
     "switch": {
+      "getbpb": {
+        "name": "Profilwechsel am Gerät erlauben",
+        "state": {
+          "false": "Deaktiviert",
+          "true": "Aktiviert"
+        }
+      },
       "getbuz": {
         "name": "Signalton bei Alarm",
         "state": {
@@ -1466,6 +1648,12 @@
           "false": "Deaktiviert",
           "true": "Aktiviert"
         }
+      },
+      "getifl": {
+        "name": "Erstbefüllung"
+      },
+      "getmfl": {
+        "name": "Manuelle Befüllung"
       },
       "getssa": {
         "name": "Automatische Rückspülung",
@@ -1508,7 +1696,7 @@
   },
   "issues": {
     "device_offline": {
-      "description": "Das ConelClearPro API Connect Gerät \"{device_name}\" ist derzeit offline und kann nicht erreicht werden. Bitte überprüfen Sie:\n\n- Stromversorgung des Geräts\n- Netzwerkverbindung\n- ConelClearPro API Connect Cloud-Dienst Status\n\nDas Gerät wird automatisch wieder verbunden, sobald es online ist.",
+      "description": "Das ConelClearPro Agent Gerät \"{device_name}\" ist derzeit offline und kann nicht erreicht werden. Bitte überprüfen Sie:\n\n- Stromversorgung des Geräts\n- Netzwerkverbindung\n- ConelClearPro Agent Cloud-Dienst Status\n\nDas Gerät wird automatisch wieder verbunden, sobald es online ist.",
       "title": "Gerät offline: {device_name}"
     }
   },
@@ -1518,8 +1706,11 @@
         "data": {
           "scan_interval": "Aktualisierungsintervall"
         },
+        "data_description": {
+          "scan_interval": "Legt fest, wie viele Sekunden zwischen zwei Aktualisierungen liegen. Für die Cloud sind mindestens 60 Sekunden möglich, für lokale Geräte mindestens 10 Sekunden, in beiden Fällen höchstens 600 Sekunden."
+        },
         "description": "Definiert den Zeitabstand zwischen API-Aufrufen.",
-        "title": "ConelClearPro API Connect Optionen"
+        "title": "ConelClearPro Agent Optionen"
       }
     }
   }

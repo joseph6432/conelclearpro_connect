@@ -1,13 +1,40 @@
 {
   "entity": {
     "binary_sensor": {
+      "get71": {
+        "default": "mdi:shield-off-outline"
+      },
+      "getbsa": {
+        "default": "mdi:home-flood"
+      },
       "getbuz": {
         "default": "mdi:volume-high"
+      },
+      "getcsd": {
+        "default": "mdi:flash"
+      },
+      "getids": {
+        "default": "mdi:weather-sunny"
+      },
+      "getpsd": {
+        "default": "mdi:gauge"
+      },
+      "getsfv": {
+        "default": "mdi:update"
+      },
+      "gettsd": {
+        "default": "mdi:thermometer"
+      },
+      "getvto": {
+        "default": "mdi:valve"
       }
     },
     "button": {
       "setala": {
         "default": "mdi:alarm-off"
+      },
+      "setdex": {
+        "default": "mdi:water-check"
       },
       "setnot": {
         "default": "mdi:bell-off-outline"
@@ -29,11 +56,23 @@
       "getcrt": {
         "default": "mdi:filter-variant"
       },
+      "getcwl": {
+        "default": "mdi:gauge-low"
+      },
       "getfcd": {
         "default": "mdi:calendar-filter-outline"
       },
+      "getfcs": {
+        "default": "mdi:filter-cog"
+      },
       "getffm": {
         "default": "mdi:filter"
+      },
+      "getfmt": {
+        "default": "mdi:timer-sand"
+      },
+      "getfvt": {
+        "default": "mdi:cup-water"
       },
       "getiwh": {
         "default": "mdi:water-percent"
@@ -147,11 +186,15 @@
       "getavo": {
         "default": "mdi:waves-arrow-right"
       },
-      "getbap": {
-        "default": "mdi:battery"
-      },
       "getbar": {
         "default": "mdi:gauge"
+      },
+      "getbat": {
+        "default": "mdi:car-battery",
+        "range": {
+          "0": "mdi:battery-alert-variant-outline",
+          "0.01": "mdi:car-battery"
+        }
       },
       "getbar2": {
         "default": "mdi:gauge"
@@ -171,8 +214,19 @@
       "getcnd": {
         "default": "mdi:flash"
       },
-      "getcno": {
-        "default": "mdi:identifier"
+      "getcnd_class": {
+        "default": "mdi:water-opacity",
+        "state": {
+          "hard": "mdi:water",
+          "medium": "mdi:water-opacity",
+          "soft": "mdi:water-outline"
+        }
+      },
+      "getcnf": {
+        "default": "mdi:tune-variant"
+      },
+      "getcnl": {
+        "default": "mdi:flash-alert"
       },
       "getcoa": {
         "default": "mdi:counter"
@@ -198,6 +252,9 @@
       "getcs3": {
         "default": "mdi:beaker"
       },
+      "getcwl": {
+        "default": "mdi:gauge-low"
+      },
       "getcyn": {
         "default": "mdi:numeric"
       },
@@ -206,6 +263,12 @@
       },
       "getdbd": {
         "default": "mdi:gauge"
+      },
+      "getdbt": {
+        "default": "mdi:timer-outline"
+      },
+      "getdcm": {
+        "default": "mdi:valve-closed"
       },
       "getdfm": {
         "default": "mdi:cog-outline"
@@ -216,11 +279,23 @@
       "getdma": {
         "default": "mdi:alert-circle-outline"
       },
+      "getdom": {
+        "default": "mdi:valve-open"
+      },
+      "getdpl": {
+        "default": "mdi:pulse"
+      },
       "getdrp": {
         "default": "mdi:calendar-clock"
       },
+      "getdst": {
+        "default": "mdi:timer-sand"
+      },
       "getdsv": {
         "default": "mdi:water-check"
+      },
+      "getdtc": {
+        "default": "mdi:repeat"
       },
       "getdtt": {
         "default": "mdi:clock-outline"
@@ -237,6 +312,9 @@
       "getfco": {
         "default": "mdi:counter"
       },
+      "getfcs": {
+        "default": "mdi:filter-cog"
+      },
       "getffm": {
         "default": "mdi:filter"
       },
@@ -245,6 +323,12 @@
       },
       "getflo": {
         "default": "mdi:waves-arrow-right"
+      },
+      "getfmt": {
+        "default": "mdi:timer-sand"
+      },
+      "getfvt": {
+        "default": "mdi:cup-water"
       },
       "gethmd": {
         "default": "mdi:water-percent"
@@ -284,6 +368,9 @@
       },
       "getltv": {
         "default": "mdi:faucet"
+      },
+      "getlwt": {
+        "default": "mdi:water-alert"
       },
       "getmac": {
         "default": "mdi:ethernet"
@@ -489,6 +576,9 @@
       "getprf": {
         "default": "mdi:account"
       },
+      "getprn": {
+        "default": "mdi:account-multiple"
+      },
       "getprs": {
         "default": "mdi:gauge"
       },
@@ -652,11 +742,20 @@
       "getslf": {
         "default": "mdi:waves-arrow-right"
       },
+      "getslo": {
+        "default": "mdi:percent-outline"
+      },
       "getslt": {
         "default": "mdi:timer-outline"
       },
       "getslv": {
         "default": "mdi:water"
+      },
+      "getsmf": {
+        "default": "mdi:waves-arrow-right"
+      },
+      "getsof": {
+        "default": "mdi:percent-outline"
       },
       "getsrh": {
         "default": "mdi:wrench-clock"
@@ -700,6 +799,9 @@
       "gettmp": {
         "default": "mdi:timer-off-outline"
       },
+      "gettmz": {
+        "default": "mdi:map-clock"
+      },
       "gettor": {
         "default": "mdi:counter"
       },
@@ -711,6 +813,9 @@
       },
       "gettrv": {
         "default": "mdi:water-plus"
+      },
+      "getttm": {
+        "default": "mdi:turbine"
       },
       "gettyp": {
         "default": "mdi:devices"
@@ -774,11 +879,20 @@
       }
     },
     "switch": {
+      "getbpb": {
+        "default": "mdi:gesture-tap-button"
+      },
       "getbuz": {
         "default": "mdi:volume-high"
       },
       "getdfi": {
         "default": "mdi:water-sync"
+      },
+      "getifl": {
+        "default": "mdi:water-plus"
+      },
+      "getmfl": {
+        "default": "mdi:hand-water"
       },
       "getssa": {
         "default": "mdi:autorenew"

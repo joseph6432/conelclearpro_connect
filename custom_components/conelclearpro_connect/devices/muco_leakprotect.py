@@ -3,12 +3,12 @@
 Model type: Leak protection (LS)
 
 Covers both the Leak Protection Module A25 (dkv=501) and SafeTech Lock Connect
-(dkv=506) products, which share this device_file since both are the
+(dkv=506) products, which share this device file since both are the
 "Leckageschutz" (leak protection) role of the MultiController firmware.
 
 Derived from tests/fixtures/json/SanibelLeakProtectionModuleA25_get_all.json.
 This is a POSITIVE list: only keys confirmed to be meaningful for this model
-are listed, unlike the shared global allowlists in const.py which have to
+are listed, unlike the shared global allowlists of the platforms which have to
 cover every supported model at once.
 
 Unlike the muco_filling (filling controller) variant, the leak-protection-profile
@@ -18,100 +18,239 @@ since this model genuinely controls a shutoff valve. getNMT/getNPT/getNMS are
 included for the SafeTech Lock Connect variant, per the official validity
 matrix (docs/syrconnect-protocol.md).
 
+The self-learning phase and the microleakage test are included: the official
+API documentation lists both for SafeTech Lock Connect, and the CLEAR PRO
+RETROFIT LEAKAGE PROTECTION capture reports the results of a finished
+self-learning phase (getSLT=44171, getSLV=550, getSLF=3500), a skipped scheduled
+test (getDSV=3) and a live getNPS. All variants share the MultiController
+firmware.
+
 Deliberately NOT included, pending confirmation on a real device:
 - getBAR2, getCND: present with a value of 0 in the A25 fixture, but a zero
   reading doesn't prove genuine hardware support - the official "Per-model
   validity" matrix (docs/syrconnect-protocol.md) explicitly marks both as X
   (not available) for the SafeTech Lock Connect variant sharing this file,
   which takes precedence over the A25 fixture's zero values.
-- getMIH, getMXH, getMIT, getMXT: labeled "(SafeFloor)" in const.py -
+- getCNL: reported in the fixtures, but the conductivity limit needs a
+  conductivity sensor, which the matrix marks X (CND) for SafeTech Lock.
+- getMIH, getMXH, getMIT, getMXT: labeled "(SafeFloor)" in sensor.py -
   a different product (humidity/flood sensor), unrelated to this model.
-  getALD is the one exception (see SENSOR_KNOWN_KEYS below).
+  getALD is the one exception (see SENSOR_SUPPORTED_KEYS below).
 - getCRS, getCRT, getLOT, getLRC, getOHW, getPRC, getRCC, getRCD, getRCN, getRMN,
   getRMT, getRVT, getTPR: labeled "(Conel Clear Pro Fill)" water treatment / filling
-  feature in const.py - belongs to the muco_filling filling-controller variant, not
+  feature in sensor.py - belongs to the muco_filling filling-controller variant, not
   this leak-protection variant, despite being present (shared firmware).
-- getSRV: labeled "(Trio DFR/LS)" in const.py and empty ("") in the fixture.
-- getBAR: labeled "(Safe-T+)" in const.py, unrelated product; 0 in fixture.
+- getSRV: labeled "(Trio DFR/LS)" in sensor.py and empty ("") in the fixture.
+- getBAR: labeled "(Safe-T+)" in sensor.py, unrelated product; 0 in fixture.
 - getCEL: temperature reading with no clear tie to leak protection; 0 in fixture.
 - getRCP: generic cloud sync interval, not tied to any specific feature here.
-- getDBD, getDMA, getDRP, getDTT, getNPS: labeled "(Trio DFR/LS, SafeTech)"
-  microleakage-test feature in const.py - a different product family. getDSV
-  is the one exception (see BUTTON_KNOWN_KEYS below).
-- getSLE, getSLP, getSLT, getSLV: labeled "(Trio DFR/LS)" self-learning-phase
-  feature in const.py; reported as constant 0 in the fixture. getSLF is the
-  one exception (reported as a real non-zero value, 3500) but left out here
-  too pending confirmation since its siblings are all stub zeros.
 
 If real-device testing shows any of the above (or other) keys are actually
-used, move them into SENSOR_KNOWN_KEYS below.
+used, move them into SENSOR_SUPPORTED_KEYS below.
 """
 
-SENSOR_KNOWN_KEYS = {
+from . import WHU_UNITS_MUCO, SyrConnectDeviceProfile
+
+SENSOR_SUPPORTED_KEYS = {
     # --- Connectivity ---
     "dst",
     # --- Valve & Flow ---
-    "getAB", "getAVO", "getFLO", "getVLV",
+    "getAB",
+    "getAVO",
+    "getFLO",
+    "getVLV",
     # --- Alarm / Notification / Warning ---
-    "getALA", "getALM", "getALN", "getALW", "getNOT", "getWRN",
+    "getALA",
+    "getALM",
+    "getALN",
+    "getALW",
+    "getNOT",
+    "getWRN",
     # --- Voltage / Battery ---
-    "getBAP", "getBAT", "getNET",
+    "getBAP",
+    "getBAT",
+    "getNET",
     # --- Water Quality ---
-    "getIWH", "getWHU",
+    "getIWH",
+    "getWHU",
     # --- Water Consumption & Volume ---
-    "getLTV", "getVOL",
+    "getLTV",
+    "getVOL",
     # --- Device Status ---
-    "getDFM", "getSTA",
+    "getDFM",
+    "getSTA",
     # --- Alarm Duration ---
     "getALD",
-    # --- Leak Protection (deactivation timer, tied to the profiles below) ---
+    # --- Self-Learning Phase ---
+    "getSLE",
+    "getSLF",
+    "getSLO",
+    "getSLP",
+    "getSLT",
+    "getSLV",
+    "getSMF",
+    "getSOF",
+    # --- Microleakage Test ---
+    "getDBD",
+    "getDBT",
+    "getDCM",
+    "getDMA",
+    "getDOM",
+    "getDPL",
+    "getDRP",
+    "getDST",
+    "getDSV",
+    "getDTC",
+    "getDTT",
+    "getNPS",
+    # --- Leak Protection (warning threshold; deactivation timer, tied to the profiles below) ---
+    "getLWT",
     "getTMP",
     # --- Leak Protection Profiles 1-8 (core feature of this model) ---
-    "getPA1", "getPA2", "getPA3", "getPA4", "getPA5", "getPA6", "getPA7", "getPA8",
-    "getPB1", "getPB2", "getPB3", "getPB4", "getPB5", "getPB6", "getPB7", "getPB8",
-    "getPF1", "getPF2", "getPF3", "getPF4", "getPF5", "getPF6", "getPF7", "getPF8",
-    "getPM1", "getPM2", "getPM3", "getPM4", "getPM5", "getPM6", "getPM7", "getPM8",
-    "getPN1", "getPN2", "getPN3", "getPN4", "getPN5", "getPN6", "getPN7", "getPN8",
-    "getPR1", "getPR2", "getPR3", "getPR4", "getPR5", "getPR6", "getPR7", "getPR8",
-    "getPT1", "getPT2", "getPT3", "getPT4", "getPT5", "getPT6", "getPT7", "getPT8",
-    "getPV1", "getPV2", "getPV3", "getPV4", "getPV5", "getPV6", "getPV7", "getPV8",
-    "getPW1", "getPW2", "getPW3", "getPW4", "getPW5", "getPW6", "getPW7", "getPW8",
+    "getPA1",
+    "getPA2",
+    "getPA3",
+    "getPA4",
+    "getPA5",
+    "getPA6",
+    "getPA7",
+    "getPA8",
+    "getPB1",
+    "getPB2",
+    "getPB3",
+    "getPB4",
+    "getPB5",
+    "getPB6",
+    "getPB7",
+    "getPB8",
+    "getPF1",
+    "getPF2",
+    "getPF3",
+    "getPF4",
+    "getPF5",
+    "getPF6",
+    "getPF7",
+    "getPF8",
+    "getPM1",
+    "getPM2",
+    "getPM3",
+    "getPM4",
+    "getPM5",
+    "getPM6",
+    "getPM7",
+    "getPM8",
+    "getPN1",
+    "getPN2",
+    "getPN3",
+    "getPN4",
+    "getPN5",
+    "getPN6",
+    "getPN7",
+    "getPN8",
+    "getPR1",
+    "getPR2",
+    "getPR3",
+    "getPR4",
+    "getPR5",
+    "getPR6",
+    "getPR7",
+    "getPR8",
+    "getPT1",
+    "getPT2",
+    "getPT3",
+    "getPT4",
+    "getPT5",
+    "getPT6",
+    "getPT7",
+    "getPT8",
+    "getPV1",
+    "getPV2",
+    "getPV3",
+    "getPV4",
+    "getPV5",
+    "getPV6",
+    "getPV7",
+    "getPV8",
+    "getPW1",
+    "getPW2",
+    "getPW3",
+    "getPW4",
+    "getPW5",
+    "getPW6",
+    "getPW7",
+    "getPW8",
     "getPRF",
+    "getPRN",
     # --- Filter ---
     "getFFM",
     # --- Display ---
     "getSRO",
     # --- Device Info & Diagnostics ---
-    "getEGW", "getEIP", "getLNG", "getMAC1", "getMAC2", "getSRN", "getVER",
+    "getEGW",
+    "getEIP",
+    "getLNG",
+    "getMAC1",
+    "getMAC2",
+    "getSRN",
+    "getTMZ",
+    "getVER",
     # --- Wi-Fi ---
-    "getAPT", "getWFC", "getWFR", "getWFS", "getWGW", "getWIP",
+    "getAPT",
+    "getWFC",
+    "getWFR",
+    "getWFS",
+    "getWGW",
+    "getWIP",
     # --- Lock / Connection Centre (SafeTech Lock Connect) ---
-    "getNMS", "getNMT", "getNPT",
+    "getNMS",
+    "getNMT",
+    "getNPT",
 }
 
-SELECT_KNOWN_KEYS = {
-    "getPRF", "getSRO", "getFFM",
+SELECT_SUPPORTED_KEYS = {
+    "getPRF",
+    "getSRO",
+    "getFFM",
 }
 
 # getDFI (Conel Clear Pro Fill filling mode) deliberately excluded - belongs to the
 # muco_filling variant, not this leak-protection variant.
-SWITCH_KNOWN_KEYS = {
+SWITCH_SUPPORTED_KEYS = {
     "getBUZ",
 }
 
-BINARY_SENSOR_KNOWN_KEYS = {
+BINARY_SENSOR_SUPPORTED_KEYS = {
+    "get71",
+    "getBSA",
     "getBUZ",
+    "getIDS",
+    "getSFV",
+    "getVTO",
 }
 
 # setSIR (no regeneration) deliberately excluded. setDEX (microleakage test) is
 # tentatively included: unlike the muco_filling fixture, getDSV is non-zero (3) here and
 # a microleakage test is thematically consistent with a leak-protection module -
 # verify against a real device before relying on this.
-BUTTON_KNOWN_KEYS = {
-    "setALA", "setNOT", "setWRN", "setDEX",
+BUTTON_SUPPORTED_KEYS = {
+    "setALA",
+    "setNOT",
+    "setWRN",
+    "setDEX",
 }
 
 # getAB (valve shutoff control) kept - this model genuinely controls a valve.
-VALVE_KNOWN_KEYS = {
+VALVE_SUPPORTED_KEYS = {
     "getAB",
 }
+
+
+PROFILE = SyrConnectDeviceProfile(
+    binary_sensor=BINARY_SENSOR_SUPPORTED_KEYS,
+    button=BUTTON_SUPPORTED_KEYS,
+    select=SELECT_SUPPORTED_KEYS,
+    sensor=SENSOR_SUPPORTED_KEYS,
+    switch=SWITCH_SUPPORTED_KEYS,
+    valve=VALVE_SUPPORTED_KEYS,
+    whu_units=WHU_UNITS_MUCO,
+)

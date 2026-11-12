@@ -1,34 +1,77 @@
 """Tests for select platform."""
-from __future__ import annotations
 
+# The unit tests in this module check private helpers and attributes directly.
+# ruff: noqa: SLF001
+
+from collections.abc import Callable
+from dataclasses import replace
+import json
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from typing import Any, NoReturn, cast, override
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 import pytest
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, UnitOfTime
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.syr_connect.coordinator import SyrConnectDataUpdateCoordinator
-from custom_components.syr_connect.models import detect_model
-from custom_components.syr_connect.response_parser import ResponseParser
-from custom_components.syr_connect.select import (
+from custom_components.conelclearpro_connect import select as select_module
+from custom_components.conelclearpro_connect.const import CONF_SERVICE
+from custom_components.conelclearpro_connect.coordinator import SyrConnectDataUpdateCoordinator
+from custom_components.conelclearpro_connect.exceptions import SyrConnectError
+from custom_components.conelclearpro_connect.models import (
+    MODEL_SIGNATURES,
+    UNKNOWN_MODEL,
+    detect_model,
+)
+from custom_components.conelclearpro_connect.response_parser import ResponseParser
+from custom_components.conelclearpro_connect.select import (
     SyrConnectDiscreteSelect,
     SyrConnectHardnessSelect,
     SyrConnectNumericSelect,
     SyrConnectPrfSelect,
+    SyrConnectRangedHardnessSelect,
     SyrConnectRegenerationSelect,
     SyrConnectRotationSelect,
     _build_time_options,
     async_setup_entry,
 )
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, EntityCategory, UnitOfTime
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+
+
+def _patch_sensor_description(key: str, **changes: Any) -> Any:
+    """Patch fields of the sensor description of `key` (the selects read its unit)."""
+    descriptions = select_module._conelclearpro_connect_SENSOR_DESCRIPTIONS
+    return patch.dict(descriptions, {key: replace(descriptions[key], **changes)})
+
+
+def _patch_select_description(key: str, **changes: Any) -> Any:
+    """Patch fields of the select description of `key`."""
+    descriptions = select_module._conelclearpro_connect_SELECT_DESCRIPTIONS
+    return patch.dict(descriptions, {key: replace(descriptions[key], **changes)})
+
+
+def test_select_descriptions_have_unique_keys() -> None:
+    """Every select key is described once; a duplicate would silently replace the first one."""
+    keys = [d.key for d in select_module._conelclearpro_connect_SELECT_TYPES]
+    assert len(keys) == len(set(keys))
+    assert set(keys) >= select_module._conelclearpro_connect_SELECT_SUPPORTED_KEYS
+
+
+def test_option_unit_without_unit_raises() -> None:
+    """A select key whose sensor description has no unit fails instead of labeling "30 None"."""
+    assert select_module._option_unit("getRMT") == "min"
+    with (
+        _patch_sensor_description("getRMT", native_unit_of_measurement=None),
+        pytest.raises(ValueError, match="getRMT"),
+    ):
+        select_module._unit_options("getRMT", [30])
 
 
 def _build_coordinator(hass: HomeAssistant, data: dict) -> Any:
     """Build a real coordinator; typed Any because tests replace its methods with mocks."""
     config_data = {
+        CONF_SERVICE: "de.consoft.syr.connect",
         CONF_USERNAME: "test@example.com",
         CONF_PASSWORD: "password",
     }
@@ -38,7 +81,7 @@ def _build_coordinator(hass: HomeAssistant, data: dict) -> Any:
         config_data,
         60,
     )
-    coordinator.async_set_updated_data(data)
+    coordinator.async_set_updated_data(cast(Any, data))
     coordinator.last_update_success = True
     return coordinator
 
@@ -80,14 +123,15 @@ async def test_regeneration_select_option_selection(hass: HomeAssistant) -> None
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    coordinator.async_set_device_value = AsyncMock()
+    coordinator.async_set_device_values = AsyncMock()
     select = SyrConnectRegenerationSelect(coordinator, "device1", "Device 1")
 
     await select.async_select_option("03:45")
 
-    assert coordinator.async_set_device_value.call_count == 2
-    coordinator.async_set_device_value.assert_any_call("device1", "setRTH", 3)
-    coordinator.async_set_device_value.assert_any_call("device1", "setRTM", 45)
+    # Hour and minute in one call (one XML request), never half-applied
+    coordinator.async_set_device_values.assert_awaited_once_with(
+        "device1", [("setRTH", 3), ("setRTM", 45)]
+    )
 
 
 async def test_numeric_select_current_option(hass: HomeAssistant) -> None:
@@ -105,7 +149,9 @@ async def test_numeric_select_current_option(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
 
     assert select.current_option == "5 kg"
 
@@ -126,7 +172,9 @@ async def test_numeric_select_option_selection(hass: HomeAssistant) -> None:
     }
     coordinator = _build_coordinator(hass, data)
     coordinator.async_set_device_value = AsyncMock()
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
 
     await select.async_select_option("10 kg")
 
@@ -155,7 +203,7 @@ async def test_select_available(hass: HomeAssistant) -> None:
     assert select.available is True
 
 
-def test_build_time_options_default():
+def test_build_time_options_default() -> None:
     """Test building time options with default 15-minute step."""
     options = _build_time_options(15)
     assert "00:00" in options
@@ -165,7 +213,7 @@ def test_build_time_options_default():
     assert len(options) == 96  # 24 hours * 4 (every 15 min)
 
 
-def test_build_time_options_30min():
+def test_build_time_options_30min() -> None:
     """Test building time options with 30-minute step."""
     options = _build_time_options(30)
     assert "00:00" in options
@@ -174,7 +222,13 @@ def test_build_time_options_30min():
     assert len(options) == 48  # 24 hours * 2
 
 
-async def test_async_setup_entry(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry creates select entities."""
     data = {
         "devices": [
@@ -192,7 +246,7 @@ async def test_async_setup_entry(hass: HomeAssistant, create_mock_entry_with_coo
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
@@ -201,7 +255,13 @@ async def test_async_setup_entry(hass: HomeAssistant, create_mock_entry_with_coo
     assert len(entities) >= 3
 
 
-async def test_async_setup_entry_no_entities(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_no_entities(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry with no valid select entities."""
     data = {
         "devices": [
@@ -213,7 +273,7 @@ async def test_async_setup_entry_no_entities(hass: HomeAssistant, create_mock_en
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
@@ -222,7 +282,13 @@ async def test_async_setup_entry_no_entities(hass: HomeAssistant, create_mock_en
     assert len(entities) == 0  # No status values, so no selects
 
 
-async def test_async_setup_entry_no_prf_when_all_pa_false(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_no_prf_when_all_pa_false(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry does not create PRF select when all getPA values are false or None."""
     data = {
         "devices": [
@@ -241,7 +307,7 @@ async def test_async_setup_entry_no_prf_when_all_pa_false(hass: HomeAssistant, c
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
@@ -252,10 +318,15 @@ async def test_async_setup_entry_no_prf_when_all_pa_false(hass: HomeAssistant, c
 
 
 async def test_async_setup_entry_skips_prf_excluded_by_model_allowlist(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
-    """No PRF select is created when the detected model's per-model
-    SELECT_KNOWN_KEYS override excludes getPRF, even though getPA1 is true.
+    """No PRF select is created when the model's SELECT_SUPPORTED_KEYS override excludes getPRF.
+
+    This holds even though getPA1 is true.
 
     The muco_filling override (conelclearprofill, getDFM==3) deliberately excludes
     getPRF (no leak-protection profiles on a filling controller).
@@ -275,7 +346,7 @@ async def test_async_setup_entry_skips_prf_excluded_by_model_allowlist(
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
@@ -342,7 +413,8 @@ async def test_regeneration_select_invalid_option_format(hass: HomeAssistant) ->
     coordinator.async_set_device_value = AsyncMock()
     select = SyrConnectRegenerationSelect(coordinator, "device1", "Device 1")
 
-    await select.async_select_option("invalid")
+    with pytest.raises(ServiceValidationError):
+        await select.async_select_option("invalid")
 
     # Should not call async_set_device_value due to invalid format
     coordinator.async_set_device_value.assert_not_called()
@@ -405,7 +477,9 @@ async def test_numeric_select_missing_data(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
 
     assert select.current_option is None
 
@@ -425,7 +499,9 @@ async def test_numeric_select_invalid_value(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
 
     assert select.current_option is None
 
@@ -446,9 +522,12 @@ async def test_numeric_select_invalid_option(hass: HomeAssistant) -> None:
     }
     coordinator = _build_coordinator(hass, data)
     coordinator.async_set_device_value = AsyncMock()
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
 
-    await select.async_select_option("invalid")
+    with pytest.raises(ServiceValidationError):
+        await select.async_select_option("invalid")
 
     # Should not call async_set_device_value due to invalid option
     coordinator.async_set_device_value.assert_not_called()
@@ -470,8 +549,10 @@ async def test_numeric_select_without_unit(hass: HomeAssistant) -> None:
     }
     coordinator = _build_coordinator(hass, data)
     # getRPD typically has "days" unit, but test without
-    with patch("custom_components.syr_connect.select._SYR_CONNECT_SENSOR_UNIT", {}):
-        select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getRPD", 1, 4, 1)
+    with _patch_sensor_description("getRPD", native_unit_of_measurement=None):
+        select = SyrConnectNumericSelect(
+            coordinator, "device1", "Device 1", "getRPD", 1, 4, 1
+        )
 
         # Options should be plain numbers
         assert "1" in select.options
@@ -546,7 +627,13 @@ async def test_prf_select_options_with_getpa_int_one(hass: HomeAssistant) -> Non
     assert select.current_option == "Profile A"
 
 
-async def test_async_setup_entry_registry_exception(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_registry_exception(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Ensure async_setup_entry handles exceptions from entity registry cleanup."""
     data = {
         "devices": [
@@ -561,19 +648,31 @@ async def test_async_setup_entry_registry_exception(hass: HomeAssistant, create_
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     # Force the entity registry accessor to raise to hit the exception branch
-    with patch("homeassistant.helpers.entity_registry.async_get", side_effect=RuntimeError("boom")):
+    with patch(
+        "homeassistant.helpers.entity_registry.async_get",
+        side_effect=RuntimeError("boom"),
+    ):
         await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should still proceed and add the regeneration select
     assert len(entities) >= 1
 
 
+_conelclearpro_connect_TEST_MUCO_FILLING_MODEL = next(
+    model for model in MODEL_SIGNATURES if model.name == "conelclearprofill"
+)
+
+
 async def test_async_setup_entry_creates_muco_config_selects(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """async_setup_entry creates all MuCo/CONEL config selects when present in status."""
     data = {
@@ -582,6 +681,7 @@ async def test_async_setup_entry_creates_muco_config_selects(
                 "id": "device1",
                 "name": "Test Device",
                 "project_id": "project1",
+                "model": _conelclearpro_connect_TEST_MUCO_FILLING_MODEL,
                 "status": {
                     "getCRS": "3",
                     "getCRT": "1",
@@ -601,11 +701,32 @@ async def test_async_setup_entry_creates_muco_config_selects(
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     keys = {getattr(e, "_sensor_key", None) for e in entities}
-    assert {"getCRS", "getCRT", "getRCD", "getRMN", "getRMT", "getRVT", "getTPR", "getLOT"} <= keys
+    assert {
+        "getCRS",
+        "getCRT",
+        "getRCD",
+        "getRMN",
+        "getRMT",
+        "getRVT",
+        "getTPR",
+        "getLOT",
+    } <= keys
 
 
+@pytest.mark.parametrize(
+    "crt_value",
+    [
+        pytest.param(0, id="json-integer"),
+        pytest.param("0", id="xml-string"),
+    ],
+)
 async def test_muco_conditional_select_creates_ohw_for_hwe_cartridge(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    crt_value: int | str,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """getCRT=0 (HWE) creates the getOHW select and not getLOT."""
     data = {
@@ -614,7 +735,8 @@ async def test_muco_conditional_select_creates_ohw_for_hwe_cartridge(
                 "id": "device1",
                 "name": "Test Device",
                 "project_id": "project1",
-                "status": {"getCRT": "0", "getOHW": "5"},
+                "model": _conelclearpro_connect_TEST_MUCO_FILLING_MODEL,
+                "status": {"getCRT": crt_value, "getOHW": "5"},
             }
         ]
     }
@@ -629,7 +751,11 @@ async def test_muco_conditional_select_creates_ohw_for_hwe_cartridge(
 
 
 async def test_muco_conditional_select_switches_live_on_crt_change(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Changing getCRT live re-evaluates the conditional select without a reload."""
     data = {
@@ -638,6 +764,7 @@ async def test_muco_conditional_select_switches_live_on_crt_change(
                 "id": "device1",
                 "name": "Test Device",
                 "project_id": "project1",
+                "model": _conelclearpro_connect_TEST_MUCO_FILLING_MODEL,
                 "status": {"getCRT": "0", "getOHW": "5"},
             }
         ]
@@ -650,7 +777,9 @@ async def test_muco_conditional_select_switches_live_on_crt_change(
     fake_registry = MagicMock()
     fake_registry.async_get.return_value = fake_existing_entry
 
-    with patch("homeassistant.helpers.entity_registry.async_get", return_value=fake_registry):
+    with patch(
+        "homeassistant.helpers.entity_registry.async_get", return_value=fake_registry
+    ):
         await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     assert "getOHW" in {getattr(e, "_sensor_key", None) for e in entities}
@@ -663,7 +792,9 @@ async def test_muco_conditional_select_switches_live_on_crt_change(
     entities.clear()
     fake_registry.async_remove.reset_mock()
 
-    with patch("homeassistant.helpers.entity_registry.async_get", return_value=fake_registry):
+    with patch(
+        "homeassistant.helpers.entity_registry.async_get", return_value=fake_registry
+    ):
         listener()
 
     removed_entity_id = fake_registry.async_remove.call_args.args[0]
@@ -675,11 +806,18 @@ async def test_numeric_select_options_include_unit(hass: HomeAssistant) -> None:
     """Ensure numeric select options include the configured unit label."""
     data = {
         "devices": [
-            {"id": "device1", "name": "Device 1", "project_id": "project1", "status": {"getSV1": "5"}},
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "project_id": "project1",
+                "status": {"getSV1": "5"},
+            },
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 2, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 2, 1
+    )
     # Unit for getSV1 is kilograms -> options should include 'kg'
     assert any(opt.endswith("kg") for opt in select.options)
 
@@ -700,7 +838,9 @@ async def test_numeric_select_unavailable_coordinator(hass: HomeAssistant) -> No
     }
     coordinator = _build_coordinator(hass, data)
     coordinator.last_update_success = False
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
 
     assert select.available is False
 
@@ -721,12 +861,20 @@ async def test_numeric_select_device_unavailable(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
 
     assert select.available is False
 
 
-async def test_async_setup_entry_zero_sv_values_always_shown(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_zero_sv_values_always_shown(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry always creates SVx selects, even with zero values."""
     data = {
         "devices": [
@@ -743,24 +891,36 @@ async def test_async_setup_entry_zero_sv_values_always_shown(hass: HomeAssistant
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # All three SVx selects should be created regardless of zero values
-    sv1_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV1']
-    sv2_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV2']
-    sv3_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV3']
+    sv1_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV1"
+    ]
+    sv2_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV2"
+    ]
+    sv3_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV3"
+    ]
 
     assert len(sv1_entities) == 1  # Created even though value is 0
     assert len(sv2_entities) == 1  # Created even though value is 0
     assert len(sv3_entities) == 1  # Created
 
 
-async def test_async_setup_entry_no_data(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_no_data(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry with no coordinator data."""
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(None)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(None)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
@@ -828,12 +988,16 @@ async def test_regeneration_select_device_not_found(hass: HomeAssistant) -> None
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectRegenerationSelect(coordinator, "device1", "Device 1")  # device1 doesn't exist
+    select = SyrConnectRegenerationSelect(
+        coordinator, "device1", "Device 1"
+    )  # device1 doesn't exist
 
     assert select.current_option is None
 
 
-async def test_regeneration_select_available_device_not_found(hass: HomeAssistant) -> None:
+async def test_regeneration_select_available_device_not_found(
+    hass: HomeAssistant,
+) -> None:
     """Test regeneration select availability when device not found."""
     data = {
         "devices": [
@@ -846,10 +1010,12 @@ async def test_regeneration_select_available_device_not_found(hass: HomeAssistan
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectRegenerationSelect(coordinator, "device1", "Device 1")  # device1 doesn't exist
+    select = SyrConnectRegenerationSelect(
+        coordinator, "device1", "Device 1"
+    )  # device1 doesn't exist
 
     # Should default to True when device not found
-    assert select.available is True
+    assert select.available is False
 
 
 async def test_regeneration_select_combined_current_option(hass: HomeAssistant) -> None:
@@ -873,7 +1039,9 @@ async def test_regeneration_select_combined_current_option(hass: HomeAssistant) 
     assert select.current_option == "07:15"
 
 
-async def test_regeneration_select_combined_invalid_current_option(hass: HomeAssistant) -> None:
+async def test_regeneration_select_combined_invalid_current_option(
+    hass: HomeAssistant,
+) -> None:
     """Invalid combined getRTM string should result in None for current_option."""
     data = {
         "devices": [
@@ -894,7 +1062,9 @@ async def test_regeneration_select_combined_invalid_current_option(hass: HomeAss
     assert select.current_option is None
 
 
-async def test_regeneration_select_handles_coordinator_exception(hass: HomeAssistant) -> None:
+async def test_regeneration_select_handles_coordinator_exception(
+    hass: HomeAssistant,
+) -> None:
     """Ensure exceptions from coordinator are caught when setting RTM."""
     data = {
         "devices": [
@@ -910,19 +1080,20 @@ async def test_regeneration_select_handles_coordinator_exception(hass: HomeAssis
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    async def raiser(*args, **kwargs):
+
+    async def raiser(*args: Any, **kwargs: Any) -> None:
         raise ValueError("boom")
 
-    coordinator.async_set_device_value = AsyncMock(side_effect=raiser)
+    coordinator.async_set_device_values = AsyncMock(side_effect=raiser)
     select = SyrConnectRegenerationSelect(coordinator, "device1", "Device 1")
 
     # Should raise HomeAssistantError to display error in UI
-    with pytest.raises(HomeAssistantError, match="Failed to set regeneration time"):
+    with pytest.raises(HomeAssistantError, match="set_value_failed"):
         await select.async_select_option("03:45")
 
 
 async def test_regeneration_select_no_commands_returns(hass: HomeAssistant) -> None:
-    """When set_sensor_rtm_value returns no commands, nothing is sent."""
+    """When set_sensor_rtm_value returns no commands, the option is rejected."""
     data = {
         "devices": [
             {
@@ -937,16 +1108,23 @@ async def test_regeneration_select_no_commands_returns(hass: HomeAssistant) -> N
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    coordinator.async_set_device_value = AsyncMock()
+    coordinator.async_set_device_values = AsyncMock()
     select = SyrConnectRegenerationSelect(coordinator, "device1", "Device 1")
 
-    with patch("custom_components.syr_connect.select.set_sensor_rtm_value", return_value=[]):
+    with (
+        patch(
+            "custom_components.conelclearpro_connect.select.set_sensor_rtm_value", return_value=[]
+        ),
+        pytest.raises(ServiceValidationError),
+    ):
         await select.async_select_option("03:45")
 
-    coordinator.async_set_device_value.assert_not_called()
+    coordinator.async_set_device_values.assert_not_called()
 
 
-async def test_numeric_select_handles_coordinator_exception(hass: HomeAssistant) -> None:
+async def test_numeric_select_handles_coordinator_exception(
+    hass: HomeAssistant,
+) -> None:
     """Ensure exceptions from coordinator are caught when setting numeric selects."""
     data = {
         "devices": [
@@ -961,18 +1139,23 @@ async def test_numeric_select_handles_coordinator_exception(hass: HomeAssistant)
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    async def raiser(*args, **kwargs):
+
+    async def raiser(*args: Any, **kwargs: Any) -> None:
         raise ValueError("boom")
 
     coordinator.async_set_device_value = AsyncMock(side_effect=raiser)
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
 
     # Should raise HomeAssistantError to display error in UI
-    with pytest.raises(HomeAssistantError, match="Failed to set getSV1"):
+    with pytest.raises(HomeAssistantError, match="set_value_failed"):
         await select.async_select_option("10 kg")
 
 
-async def test_numeric_select_current_option_no_matching_option(hass: HomeAssistant) -> None:
+async def test_numeric_select_current_option_no_matching_option(
+    hass: HomeAssistant,
+) -> None:
     """Test numeric select current option when value doesn't match options."""
     data = {
         "devices": [
@@ -987,7 +1170,9 @@ async def test_numeric_select_current_option_no_matching_option(hass: HomeAssist
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
 
     # Should fall back to returning the numeric string
     assert select.current_option == "100"
@@ -1008,7 +1193,9 @@ async def test_numeric_select_empty_value(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
 
     assert select.current_option is None
 
@@ -1028,7 +1215,9 @@ async def test_numeric_select_device_not_found(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)  # device1 doesn't exist
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )  # device1 doesn't exist
 
     assert select.current_option is None
 
@@ -1046,13 +1235,21 @@ async def test_numeric_select_available_device_not_found(hass: HomeAssistant) ->
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)  # device1 doesn't exist
+    select = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )  # device1 doesn't exist
 
     # Should default to True when device not found
-    assert select.available is True
+    assert select.available is False
 
 
-async def test_async_setup_entry_skip_empty_sv_values(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_skip_empty_sv_values(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry skips empty salt values."""
     data = {
         "devices": [
@@ -1068,20 +1265,30 @@ async def test_async_setup_entry_skip_empty_sv_values(hass: HomeAssistant, creat
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should only create select for getSV2
-    sv1_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV1']
-    sv2_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV2']
+    sv1_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV1"
+    ]
+    sv2_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV2"
+    ]
 
     assert len(sv1_entities) == 0
     assert len(sv2_entities) == 1
 
 
-async def test_async_setup_entry_skip_none_sv_values(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_skip_none_sv_values(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry skips None salt values."""
     data = {
         "devices": [
@@ -1096,18 +1303,22 @@ async def test_async_setup_entry_skip_none_sv_values(hass: HomeAssistant, create
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should only create select for getSV2
-    sv1_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV1']
+    sv1_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV1"
+    ]
 
     assert len(sv1_entities) == 0
 
 
-async def test_async_setup_entry_skip_invalid_float_sv_values(hass: HomeAssistant) -> None:
+async def test_async_setup_entry_skip_invalid_float_sv_values(
+    hass: HomeAssistant,
+) -> None:
     """Test async_setup_entry skips invalid float salt values."""
     mock_config_entry = MockConfigEntry()
 
@@ -1136,12 +1347,20 @@ async def test_async_setup_entry_skip_invalid_float_sv_values(hass: HomeAssistan
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should only create select for getSV2
-    sv1_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV1']
+    sv1_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV1"
+    ]
 
     assert len(sv1_entities) == 0
 
 
-async def test_async_setup_entry_skip_zero_rpd(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_skip_zero_rpd(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry skips zero RPD values."""
     data = {
         "devices": [
@@ -1155,17 +1374,25 @@ async def test_async_setup_entry_skip_zero_rpd(hass: HomeAssistant, create_mock_
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should not create RPD select
-    rpd_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getRPD']
+    rpd_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getRPD"
+    ]
     assert len(rpd_entities) == 0
 
 
-async def test_async_setup_entry_skip_empty_rpd(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_skip_empty_rpd(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry skips empty RPD values."""
     data = {
         "devices": [
@@ -1179,17 +1406,25 @@ async def test_async_setup_entry_skip_empty_rpd(hass: HomeAssistant, create_mock
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should not create RPD select
-    rpd_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getRPD']
+    rpd_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getRPD"
+    ]
     assert len(rpd_entities) == 0
 
 
-async def test_async_setup_entry_skip_none_rpd(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_skip_none_rpd(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry skips None RPD values."""
     data = {
         "devices": [
@@ -1203,17 +1438,25 @@ async def test_async_setup_entry_skip_none_rpd(hass: HomeAssistant, create_mock_
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should not create RPD select
-    rpd_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getRPD']
+    rpd_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getRPD"
+    ]
     assert len(rpd_entities) == 0
 
 
-async def test_async_setup_entry_skip_invalid_rpd(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_skip_invalid_rpd(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry skips invalid RPD values."""
     data = {
         "devices": [
@@ -1230,17 +1473,25 @@ async def test_async_setup_entry_skip_invalid_rpd(hass: HomeAssistant, create_mo
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should not create RPD select
-    rpd_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getRPD']
+    rpd_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getRPD"
+    ]
     assert len(rpd_entities) == 0
 
 
-async def test_async_setup_entry_custom_model_capacity(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_custom_model_capacity(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry uses model-specific salt capacity."""
     data = {
         "devices": [
@@ -1256,17 +1507,25 @@ async def test_async_setup_entry_custom_model_capacity(hass: HomeAssistant, crea
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Find the getSV1 select entity
-    sv1_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV1']
+    sv1_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV1"
+    ]
     assert len(sv1_entities) == 1
 
 
-async def test_async_setup_entry_model_from_type_field(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_model_from_type_field(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry does not create SVx selects for unknown models.
 
     When getCNA is missing and the device type is not a known model name,
@@ -1286,13 +1545,15 @@ async def test_async_setup_entry_model_from_type_field(hass: HomeAssistant, crea
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Unknown model has maximum_salt_volume=None, so getSV1 select must not be created
-    sv1_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV1']
+    sv1_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV1"
+    ]
     assert len(sv1_entities) == 0
 
 
@@ -1304,7 +1565,7 @@ async def test_async_setup_entry_model_from_type_field(hass: HomeAssistant, crea
         ("208", "conceptsingle"),
         ("209", "optimasingle"),
         ("210", "concept200duo"),
-        ("211", "optimat22duo"),
+        ("211", "optimat2duo"),
         ("212", "sanibelsoftwaterduo"),
         ("213", "optimaduo"),
         ("214", "conelclearprosofttwin"),
@@ -1317,9 +1578,17 @@ async def test_async_setup_entry_model_from_type_field(hass: HomeAssistant, crea
     ],
 )
 async def test_async_setup_entry_skips_getsv1_select_for_neosoft_family_rebrands(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities, srn_prefix, expected_name
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    srn_prefix: Any,
+    expected_name: Any,
 ) -> None:
-    """All rebrand-only siblings sharing device_file "neosoft_single"/"neosoft_duo"
+    """No NeoSoft rebrand sibling gets a getSV1 select.
+
+    All rebrand-only siblings sharing the device file neosoft_single/neosoft_duo
     (CONEL/Sanibel/Concept/Optima/Ditech/TAKE) are the same NeoSoft-platform
     hardware with the same built-in salt level sensor, so none of them get a
     getSV1 select.
@@ -1328,7 +1597,7 @@ async def test_async_setup_entry_skips_getsv1_select_for_neosoft_family_rebrands
         "getSRN": f"{srn_prefix}AAA00001",
         "getSV1": "5",
     }
-    assert detect_model(status)["name"] == expected_name
+    assert detect_model(status).name == expected_name
 
     data = {
         "devices": [
@@ -1340,23 +1609,85 @@ async def test_async_setup_entry_skips_getsv1_select_for_neosoft_family_rebrands
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
-    sv1_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV1']
+    sv1_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV1"
+    ]
     assert len(sv1_entities) == 0
 
 
+@pytest.mark.parametrize(
+    ("fixture", "expected"),
+    [
+        ("ConelClearProFill_get_all.json", {"getLOT"}),  # MuCo filling, getCRT=1
+        (
+            "ConelClearProLeakProtection.json",
+            set(),
+        ),  # reports getCRT=0/getOHW=1, but no OHW/LOT
+        ("SanibelLeakProtectionModuleA25_get_all.json", set()),
+        ("SyrTrioLock_get_all.json", set()),
+    ],
+)
+async def test_muco_lot_ohw_select_only_for_models_listing_it(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    fixture: str,
+    expected: set,
+) -> None:
+    """The dynamic getLOT/getOHW select respects the per-model allowlist (real fixtures)."""
+
+    status = json.loads(
+        (Path(__file__).parent / "fixtures/json" / fixture).read_text(encoding="utf-8")
+    )
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    keys = {getattr(e, "_sensor_key", None) for e in entities}
+    assert keys & {"getLOT", "getOHW"} == expected
+
+
 async def test_async_setup_entry_creates_triolock_selects_from_real_fixture(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """SYR TRIO Lock Connect (muco_triolock) real fixture creates getPRF/getSRO/getFFM selects."""
-    xml = (Path(__file__).parent / "fixtures/xml/SyrTrioLock_GetDeviceCollectionStatus.xml").read_text(encoding="utf-8")
+    xml = (
+        Path(__file__).parent / "fixtures/xml/SyrTrioLock_GetDeviceCollectionStatus.xml"
+    ).read_text(encoding="utf-8")
     status = ResponseParser().parse_device_status_response(xml)
-    data = {"devices": [{"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}]}
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
@@ -1387,11 +1718,14 @@ async def test_numeric_select_unit_exception_handling(hass: HomeAssistant) -> No
 
     # Mock a unit that raises exception when converted to string
     class BadUnit:
-        def __str__(self):
+        @override
+        def __str__(self) -> NoReturn:
             raise ValueError("Cannot convert to string")
 
-    with patch("custom_components.syr_connect.select._SYR_CONNECT_SENSOR_UNIT", {"getSV1": BadUnit()}):
-        select = SyrConnectNumericSelect(coordinator, "device1", "Device 1", "getSV1", 0, 25, 1)
+    with _patch_sensor_description("getSV1", native_unit_of_measurement=BadUnit()):
+        select = SyrConnectNumericSelect(
+            coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+        )
 
         # Should fall back to no unit label
         assert "0" in select.options
@@ -1400,7 +1734,13 @@ async def test_numeric_select_unit_exception_handling(hass: HomeAssistant) -> No
         assert select.options[0] == "0"
 
 
-async def test_async_setup_entry_multiple_sv_keys(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_multiple_sv_keys(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry creates entities for all SV keys."""
     data = {
         "devices": [
@@ -1417,22 +1757,30 @@ async def test_async_setup_entry_multiple_sv_keys(hass: HomeAssistant, create_mo
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should create select for all 3 SV keys
-    sv1_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV1']
-    sv2_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV2']
-    sv3_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV3']
+    sv1_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV1"
+    ]
+    sv2_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV2"
+    ]
+    sv3_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV3"
+    ]
 
     assert len(sv1_entities) == 1
     assert len(sv2_entities) == 1
     assert len(sv3_entities) == 1
 
 
-async def test_regeneration_select_combined_mode_sends_only_set_rtm(hass: HomeAssistant) -> None:
+async def test_regeneration_select_combined_mode_sends_only_set_rtm(
+    hass: HomeAssistant,
+) -> None:
     """When device reports combined getRTM (HH:MM) and no getRTH, selection should send only setRTM as string."""
     data = {
         "devices": [
@@ -1448,49 +1796,66 @@ async def test_regeneration_select_combined_mode_sends_only_set_rtm(hass: HomeAs
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    coordinator.async_set_device_value = AsyncMock()
+    coordinator.async_set_device_values = AsyncMock()
     select = SyrConnectRegenerationSelect(coordinator, "device1", "Device 1")
 
     await select.async_select_option("07:15")
 
-    # Only setRTM should be called with the HH:MM string
-    assert coordinator.async_set_device_value.call_count == 1
-    coordinator.async_set_device_value.assert_called_once_with("device1", "setRTM", "07:15")
-    # Ensure setRTH was not called
-    assert not any(c.args[1] == "setRTH" for c in coordinator.async_set_device_value.call_args_list)
+    # Only setRTM with the HH:MM string, no setRTH
+    coordinator.async_set_device_values.assert_awaited_once_with(
+        "device1", [("setRTM", "07:15")]
+    )
 
 
-async def test_async_setup_entry_removes_excluded_from_registry(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities):
+async def test_async_setup_entry_removes_excluded_from_registry(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Ensure async_setup_entry removes previously-registered excluded selects from the registry."""
-    from custom_components.syr_connect import select as select_module
 
     device_id = "device_del"
-    data = {"devices": [{"id": device_id, "name": "Device Del", "status": {}}]}
+    data = {
+        "devices": [{"id": device_id, "name": "Device Del", "status": {"getFLO": "5"}}]
+    }
     mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
-    entities, async_add_entities = mock_add_entities()
+    mock_coordinator.entry_id = "entry"
+    _entities, async_add_entities = mock_add_entities()
 
     mock_registry = MagicMock()
     mock_registry.async_remove = MagicMock()
 
     # Set up entities dict with a previously-registered stale entity whose key
-    # is not in the current SELECT_KNOWN_KEYS allowlist (e.g. a legacy key).
-    stale_entity_id = f"select.syr_connect_{device_id.lower()}_getrtime"
+    # is not in the current SELECT_SUPPORTED_KEYS allowlist (e.g. a legacy key).
+    stale_entity_id = f"select.conelclearpro_connect_{device_id.lower()}_getrtime"
 
     class FakeEntry:
-        def __init__(self, eid: str) -> None:
+        def __init__(self, eid: str, unique_id: str) -> None:
             self.entity_id = eid
+            self.unique_id = unique_id
+            self.platform = "conelclearpro_connect"
+            self.domain = eid.split(".", maxsplit=1)[0]
+            self.config_entry_id = "entry"
 
-    mock_registry.entities = {stale_entity_id: FakeEntry(stale_entity_id)}
+    mock_registry.entities.get_entries_for_config_entry_id.return_value = [
+        FakeEntry(stale_entity_id, f"entry_{device_id}_getRTIME_select")
+    ]
 
     # Patch the entity registry accessor used by Home Assistant to return our mock
-    with patch("homeassistant.helpers.entity_registry.async_get", return_value=mock_registry):
-        await select_module.async_setup_entry(hass, mock_config_entry, async_add_entities)
+    with patch(
+        "homeassistant.helpers.entity_registry.async_get", return_value=mock_registry
+    ):
+        await select_module.async_setup_entry(
+            hass, mock_config_entry, async_add_entities
+        )
 
     # Verify that async_remove was called for the stale entity
     mock_registry.async_remove.assert_called_once_with(stale_entity_id)
 
 
-def test_build_time_options_step_60_additional():
+def test_build_time_options_step_60_additional() -> None:
     """Build time options with 60-minute step (additional coverage)."""
     opts = _build_time_options(60)
     assert len(opts) == 24
@@ -1498,19 +1863,36 @@ def test_build_time_options_step_60_additional():
     assert opts[-1] == "23:00"
 
 
-async def test_regeneration_select_current_and_select_with_mock(create_mock_coordinator, hass):
-    data = {"devices": [{"id": "mdev1", "name": "Device M", "status": {"getRTM": "07:30"}, "available": True}]}
+async def test_regeneration_select_current_and_select_with_mock(
+    create_mock_coordinator: Callable[..., MagicMock], hass: HomeAssistant
+) -> None:
+    """Test regeneration select current and select with mock."""
+    data = {
+        "devices": [
+            {
+                "id": "mdev1",
+                "name": "Device M",
+                "status": {"getRTM": "07:30"},
+                "available": True,
+            }
+        ]
+    }
     coord = create_mock_coordinator(data)
     coord.last_update_success = True
-    coord.async_set_device_value = AsyncMock()
+    coord.async_set_device_values = AsyncMock()
 
     sel = SyrConnectRegenerationSelect(coord, "mdev1", "Device M")
     assert sel.current_option == "07:30"
     await sel.async_select_option("08:15")
-    assert coord.async_set_device_value.await_count >= 1
+    coord.async_set_device_values.assert_awaited_once_with(
+        "mdev1", [("setRTM", "08:15")]
+    )
 
 
-async def test_numeric_select_current_and_select_with_mock(create_mock_coordinator):
+async def test_numeric_select_current_and_select_with_mock(
+    create_mock_coordinator: Callable[..., MagicMock],
+) -> None:
+    """Test numeric select current and select with mock."""
     data = {"devices": [{"id": "mdev2", "status": {"getSV1": "5"}, "available": True}]}
     coord = create_mock_coordinator(data)
     coord.last_update_success = True
@@ -1523,19 +1905,39 @@ async def test_numeric_select_current_and_select_with_mock(create_mock_coordinat
     coord.async_set_device_value.assert_awaited()
 
 
-async def test_numeric_select_invalid_option_with_mock(create_mock_coordinator):
+async def test_numeric_select_invalid_option_with_mock(
+    create_mock_coordinator: Callable[..., MagicMock],
+) -> None:
+    """Test numeric select invalid option with mock."""
     data = {"devices": [{"id": "mdev3", "status": {"getSV1": "5"}}]}
     coord = create_mock_coordinator(data)
     coord.last_update_success = True
     coord.async_set_device_value = AsyncMock()
 
     num = SyrConnectNumericSelect(coord, "mdev3", "Device M3", "getSV1", 0, 2, 1)
-    await num.async_select_option("bad-option")
+    with pytest.raises(ServiceValidationError):
+        await num.async_select_option("bad-option")
     coord.async_set_device_value.assert_not_awaited()
 
 
-def test_prf_select_options_and_current_with_mock(create_mock_coordinator):
-    data = {"devices": [{"id": "mdev4", "status": {"getPA1": "true", "getPN1": "Profile A", "getPA2": "false", "getPRF": "1"}, "available": True}]}
+def test_prf_select_options_and_current_with_mock(
+    create_mock_coordinator: Callable[..., MagicMock],
+) -> None:
+    """Test prf select options and current with mock."""
+    data = {
+        "devices": [
+            {
+                "id": "mdev4",
+                "status": {
+                    "getPA1": "true",
+                    "getPN1": "Profile A",
+                    "getPA2": "false",
+                    "getPRF": "1",
+                },
+                "available": True,
+            }
+        ]
+    }
     coord = create_mock_coordinator(data)
     coord.last_update_success = True
     prf = SyrConnectPrfSelect(coord, "mdev4", "Device M4")
@@ -1544,7 +1946,10 @@ def test_prf_select_options_and_current_with_mock(create_mock_coordinator):
     assert prf.current_option == "Profile A"
 
 
-def test_availability_properties_with_mock(create_mock_coordinator):
+def test_availability_properties_with_mock(
+    create_mock_coordinator: Callable[..., MagicMock],
+) -> None:
+    """Test availability properties with mock."""
     data = {"devices": [{"id": "mdev5", "status": {}, "available": False}]}
     coord = create_mock_coordinator(data)
     coord.last_update_success = False
@@ -1576,18 +1981,20 @@ async def test_prf_select_handles_coordinator_exception(hass: HomeAssistant) -> 
     }
     coordinator = _build_coordinator(hass, data)
 
-    async def raiser(*args, **kwargs):
+    async def raiser(*args: Any, **kwargs: Any) -> None:
         raise ValueError("boom")
 
     coordinator.async_set_device_value = AsyncMock(side_effect=raiser)
     select = SyrConnectPrfSelect(coordinator, "device1", "Device 1")
 
     # Should raise HomeAssistantError to display error in UI
-    with pytest.raises(HomeAssistantError, match="Failed to set profile"):
+    with pytest.raises(HomeAssistantError, match="set_value_failed"):
         await select.async_select_option("Profile A")
 
 
-async def test_prf_select_invalid_current_option_conversion(hass: HomeAssistant) -> None:
+async def test_prf_select_invalid_current_option_conversion(
+    hass: HomeAssistant,
+) -> None:
     """Test PRF select when getPRF cannot be converted to int."""
     data = {
         "devices": [
@@ -1630,7 +2037,8 @@ async def test_prf_select_profile_not_found(hass: HomeAssistant) -> None:
     select = SyrConnectPrfSelect(coordinator, "device1", "Device 1")
 
     # Try to select a profile that doesn't exist
-    await select.async_select_option("Profile B")
+    with pytest.raises(ServiceValidationError):
+        await select.async_select_option("Profile B")
 
     # Should not call async_set_device_value when profile not found
     coordinator.async_set_device_value.assert_not_called()
@@ -1682,7 +2090,9 @@ async def test_prf_select_device_unavailable(hass: HomeAssistant) -> None:
     assert select.available is False
 
 
-async def test_prf_select_device_not_found_in_current_option(hass: HomeAssistant) -> None:
+async def test_prf_select_device_not_found_in_current_option(
+    hass: HomeAssistant,
+) -> None:
     """Test PRF select returns None when device not found."""
     data = {
         "devices": [
@@ -1705,7 +2115,7 @@ async def test_prf_select_device_not_found_in_current_option(hass: HomeAssistant
 
 
 async def test_prf_select_device_not_found_in_available(hass: HomeAssistant) -> None:
-    """Test PRF select available returns True when device not found."""
+    """Test PRF select is unavailable when device not found (removed from the account)."""
     data = {
         "devices": [
             {
@@ -1719,7 +2129,7 @@ async def test_prf_select_device_not_found_in_available(hass: HomeAssistant) -> 
     coordinator = _build_coordinator(hass, data)
     select = SyrConnectPrfSelect(coordinator, "device1", "Device 1")
 
-    assert select.available is True
+    assert select.available is False
 
 
 async def test_prf_select_empty_prf_value(hass: HomeAssistant) -> None:
@@ -1847,7 +2257,13 @@ async def test_prf_select_missing_profile_name(hass: HomeAssistant) -> None:
     assert select.current_option is None
 
 
-async def test_async_setup_entry_with_none_pa_values(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_with_none_pa_values(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry handles None PA values (line 99-100)."""
     data = {
         "devices": [
@@ -1866,7 +2282,7 @@ async def test_async_setup_entry_with_none_pa_values(hass: HomeAssistant, create
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
@@ -1920,9 +2336,8 @@ async def test_prf_select_entity_category(hass: HomeAssistant) -> None:
     coordinator = _build_coordinator(hass, data)
     select = SyrConnectPrfSelect(coordinator, "device1", "Device 1")
 
-    # PRF is NOT in _SYR_CONNECT_SENSOR_CONFIG, so entity_category should NOT be set
-    # This tests line 378
-    assert not hasattr(select, '_attr_entity_category')
+    # Unlike the other selects, the active profile is not a configuration entity
+    assert select.entity_category is None
 
 
 async def test_prf_select_options_with_none_pa(hass: HomeAssistant) -> None:
@@ -1984,24 +2399,29 @@ async def test_prf_select_async_select_option_with_none_pa(hass: HomeAssistant) 
 
     # Try to select Profile B (should not call because PA2 is None)
     coordinator.async_set_device_value.reset_mock()
-    await select.async_select_option("Profile B")
+    with pytest.raises(ServiceValidationError):
+        await select.async_select_option("Profile B")
     coordinator.async_set_device_value.assert_not_called()
 
 
 def _build_coordinator_local(hass: HomeAssistant, data: dict) -> Any:
     """Local helper to build a coordinator for the appended tests."""
     config_data = {
+        CONF_SERVICE: "de.consoft.syr.connect",
         CONF_USERNAME: "test@example.com",
         CONF_PASSWORD: "password",
     }
     coordinator = SyrConnectDataUpdateCoordinator(hass, MagicMock(), config_data, 60)
-    coordinator.async_set_updated_data(data)
+    coordinator.async_set_updated_data(cast(Any, data))
     coordinator.last_update_success = True
     return coordinator
 
 
 async def test_rotation_select_current_and_select(hass: HomeAssistant) -> None:
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getSRO": "90"}}]}
+    """Test rotation select current and select."""
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getSRO": "90"}}]
+    }
     coordinator = _build_coordinator_local(hass, data)
     coordinator.async_set_device_value = AsyncMock()
     select = SyrConnectRotationSelect(coordinator, "device1", "Device 1")
@@ -2013,59 +2433,80 @@ async def test_rotation_select_current_and_select(hass: HomeAssistant) -> None:
 
 
 async def test_rotation_select_invalid_and_exception(hass: HomeAssistant) -> None:
+    """Test rotation select invalid and exception."""
     data = {"devices": [{"id": "device1", "status": {"getSRO": "invalid"}}]}
     coordinator = _build_coordinator_local(hass, data)
     select = SyrConnectRotationSelect(coordinator, "device1", "Device 1")
     assert select.current_option is None
 
     coordinator.async_set_device_value = AsyncMock()
-    await select.async_select_option("bad")
+    with pytest.raises(ServiceValidationError):
+        await select.async_select_option("bad")
     coordinator.async_set_device_value.assert_not_called()
 
-    async def raiser(*args, **kwargs):
+    async def raiser(*args: Any, **kwargs: Any) -> None:
         raise ValueError("boom")
 
-    coordinator = _build_coordinator_local(hass, {"devices": [{"id": "device1", "status": {"getSRO": "90"}}]})
+    coordinator = _build_coordinator_local(
+        hass, {"devices": [{"id": "device1", "status": {"getSRO": "90"}}]}
+    )
     coordinator.async_set_device_value = AsyncMock(side_effect=raiser)
     select = SyrConnectRotationSelect(coordinator, "device1", "Device 1")
-    with pytest.raises(HomeAssistantError, match="Failed to set getSRO"):
+    with pytest.raises(HomeAssistantError, match="set_value_failed"):
         await select.async_select_option("90°")
 
 
 async def test_discrete_select_current_and_select(hass: HomeAssistant) -> None:
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getTEST": "2"}}]}
+    """Test discrete select current and select."""
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getMIH": "2"}}]
+    }
     coordinator = _build_coordinator_local(hass, data)
     coordinator.async_set_device_value = AsyncMock()
 
     mapping = {"opt_one": 1, "opt_two": 2}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getTEST", mapping)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getMIH", mapping
+    )
 
     assert select.current_option == "opt_two"
 
     await select.async_select_option("opt_one")
-    coordinator.async_set_device_value.assert_called_once_with("device1", "setTEST", 1)
+    coordinator.async_set_device_value.assert_called_once_with("device1", "setMIH", 1)
 
 
 async def test_discrete_select_invalid_and_exception(hass: HomeAssistant) -> None:
-    data = {"devices": [{"id": "device1", "status": {"getTEST": "2"}}]}
+    """Test discrete select invalid and exception."""
+    data = {"devices": [{"id": "device1", "status": {"getMIH": "2"}}]}
     coordinator = _build_coordinator_local(hass, data)
     coordinator.async_set_device_value = AsyncMock()
     mapping = {"opt_one": 1, "opt_two": 2}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getTEST", mapping)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getMIH", mapping
+    )
 
-    await select.async_select_option("not_there")
+    with pytest.raises(ServiceValidationError):
+        await select.async_select_option("not_there")
     coordinator.async_set_device_value.assert_not_called()
 
-    async def raiser(*args, **kwargs):
+    async def raiser(*args: Any, **kwargs: Any) -> None:
         raise ValueError("boom")
 
     coordinator.async_set_device_value = AsyncMock(side_effect=raiser)
-    with pytest.raises(HomeAssistantError, match="Failed to set getTEST"):
+    with pytest.raises(HomeAssistantError, match="set_value_failed"):
         await select.async_select_option("opt_two")
 
 
-@pytest.mark.xfail(reason="getFCD select is temporarily disabled (write-back bug: server resets value after change)")
-async def test_async_setup_entry_creates_fcd_select(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+@pytest.mark.xfail(
+    reason="getFCD select is temporarily disabled (write-back bug: server resets value after change)"
+)
+async def test_async_setup_entry_creates_fcd_select(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry creates a discrete select for getFCD values."""
     data = {
         "devices": [
@@ -2079,19 +2520,27 @@ async def test_async_setup_entry_creates_fcd_select(hass: HomeAssistant, create_
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should create a discrete select for getFCD with string options
-    fcd_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getFCD']
+    fcd_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getFCD"
+    ]
     assert len(fcd_entities) == 1
     # Options should include the raw mapping key as string
-    assert '2592000' in fcd_entities[0].options
+    assert "2592000" in fcd_entities[0].options
 
 
-async def test_async_setup_entry_creates_ffm_numeric_select(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_creates_ffm_numeric_select(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry creates a numeric select for getFFM when >=1."""
     data = {
         "devices": [
@@ -2105,38 +2554,54 @@ async def test_async_setup_entry_creates_ffm_numeric_select(hass: HomeAssistant,
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
-    ffm_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getFFM']
+    ffm_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getFFM"
+    ]
     assert len(ffm_entities) == 1
     # The numeric select for getFFM should expose string options '1','2','3'
-    assert ffm_entities[0].options == ['1', '2', '3']
+    assert ffm_entities[0].options == ["1", "2", "3"]
 
 
-async def test_rotation_select_entity_category_when_configured(hass: HomeAssistant) -> None:
-    """When getSRO is in central config, entity_category should be set."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getSRO": "90"}}]}
+async def test_rotation_select_entity_category_when_configured(
+    hass: HomeAssistant,
+) -> None:
+    """The rotation select is a configuration entity."""
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getSRO": "90"}}]
+    }
     coordinator = _build_coordinator_local(hass, data)
 
-    with patch("custom_components.syr_connect.select._SYR_CONNECT_SENSOR_CONFIG", {"getSRO": True}):
-        sel = SyrConnectRotationSelect(coordinator, "device1", "Device 1")
-        assert hasattr(sel, '_attr_entity_category')
+    sel = SyrConnectRotationSelect(coordinator, "device1", "Device 1")
+    assert sel.entity_category == EntityCategory.CONFIG
 
 
-async def test_discrete_select_entity_category_when_configured(hass: HomeAssistant) -> None:
-    """When a discrete select key is configured centrally, entity_category should be set."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getFCD": "2592000"}}]}
+async def test_discrete_select_entity_category_when_configured(
+    hass: HomeAssistant,
+) -> None:
+    """A discrete select is a configuration entity."""
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "1"}}]
+    }
     coordinator = _build_coordinator_local(hass, data)
-    mapping = {"2592000": 2592000}
-    with patch("custom_components.syr_connect.select._SYR_CONNECT_SENSOR_CONFIG", {"getFCD": True}):
-        sel = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getFCD", mapping)
-        assert hasattr(sel, '_attr_entity_category')
+    mapping = {"1": 1}
+    sel = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", mapping
+    )
+    assert sel.entity_category == EntityCategory.CONFIG
 
 
-async def test_async_setup_entry_skips_ffm_zero(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_skips_ffm_zero(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Ensure getFFM == 0 does not create a select entity."""
     data = {
         "devices": [
@@ -2148,26 +2613,66 @@ async def test_async_setup_entry_skips_ffm_zero(hass: HomeAssistant, create_mock
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
-    ffm_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getFFM']
+    ffm_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getFFM"
+    ]
     assert len(ffm_entities) == 0
+
+
+@pytest.mark.parametrize("ffm_value", ["0", "not_a_number"])
+async def test_async_setup_entry_ffm_skip_does_not_skip_rmo(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    ffm_value: str,
+) -> None:
+    """A getFFM of 0 or an invalid value only omits the FFM select, not the device's other selects."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "project_id": "project1",
+                "status": {"getFFM": ffm_value, "getRMO": "4"},
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    keys = [getattr(e, "_sensor_key", None) for e in entities]
+    assert "getFFM" not in keys
+    assert "getRMO" in keys
 
 
 async def test_discrete_select_current_option_no_match(hass: HomeAssistant) -> None:
     """Test discrete select current_option returns None when mapping has no match."""
-    data = {"devices": [{"id": "device1", "status": {"getTEST": "99"}}]}
+    data = {"devices": [{"id": "device1", "status": {"getMIH": "99"}}]}
     coordinator = _build_coordinator_local(hass, data)
     mapping = {"opt_one": 1, "opt_two": 2}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getTEST", mapping)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getMIH", mapping
+    )
 
     assert select.current_option is None
 
 
-async def test_async_setup_entry_adds_rotation_select(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_adds_rotation_select(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
     """Test async_setup_entry creates a rotation select when getSRO is numeric."""
     data = {
         "devices": [
@@ -2181,7 +2686,7 @@ async def test_async_setup_entry_adds_rotation_select(hass: HomeAssistant, creat
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
@@ -2191,7 +2696,11 @@ async def test_async_setup_entry_adds_rotation_select(hass: HomeAssistant, creat
 
 
 async def test_async_setup_entry_creates_rpd_select_for_model_with_max_rpd(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Test async_setup_entry creates an RPD numeric select when model provides max interval."""
     data = {
@@ -2207,33 +2716,40 @@ async def test_async_setup_entry_creates_rpd_select_for_model_with_max_rpd(
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should create an RPD numeric select when model provides max regeneration interval
-    rpd_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getRPD']
+    rpd_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getRPD"
+    ]
     assert len(rpd_entities) == 1
 
 
 async def test_async_setup_entry_creates_sv_select_for_srn_detected_model(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Test async_setup_entry creates SV1 select when model is detected via SRN prefix.
 
-    Uses a synthetic signature (no `device_file`) instead of a real srn_prefix
-    from models.py, so this stays independent of per-model SELECT_KNOWN_KEYS
+    Uses a synthetic signature (no `device_profile`) instead of a real srn_prefix
+    from models.py, so this stays independent of per-model SELECT_SUPPORTED_KEYS
     overrides in devices/*.py (e.g. neosoft.py deliberately excludes getSV1).
     """
     test_sig = [
-        {
-            "display_name": "Test Model",
-            "base_path": "test",
-            "name": "testmodel",
-            "srn_prefix": "999",
-            "maximum_salt_volume": 25,
-        }
+        replace(
+            UNKNOWN_MODEL,
+            display_name="Test Model",
+            base_path="test",
+            name="testmodel",
+            srn_prefix="999",
+            maximum_salt_volume=25,
+        )
     ]
     data = {
         "devices": [
@@ -2248,13 +2764,15 @@ async def test_async_setup_entry_creates_sv_select_for_srn_detected_model(
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
-    with patch("custom_components.syr_connect.models.MODEL_SIGNATURES", test_sig):
+    with patch("custom_components.conelclearpro_connect.models.MODEL_SIGNATURES", test_sig):
         await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
-    sv1_entities = [e for e in entities if hasattr(e, '_sensor_key') and e._sensor_key == 'getSV1']
+    sv1_entities = [
+        e for e in entities if hasattr(e, "_sensor_key") and e._sensor_key == "getSV1"
+    ]
     assert len(sv1_entities) == 1
 
 
@@ -2265,8 +2783,10 @@ async def test_async_setup_entry_creates_sv_select_for_srn_detected_model(
 
 async def test_async_setup_entry_skips_invalid_sro_value(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Invalid getSRO triggers except-continue branch; no RotationSelect created (lines 105-106)."""
     data = {
@@ -2290,8 +2810,10 @@ async def test_async_setup_entry_skips_invalid_sro_value(
 
 async def test_async_setup_entry_skips_invalid_fcd_value(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Invalid getFCD triggers except-continue branch; no DiscreteSelect created (lines 133-134)."""
     data = {
@@ -2317,8 +2839,10 @@ async def test_async_setup_entry_skips_invalid_fcd_value(
 
 async def test_async_setup_entry_skips_invalid_ffm_value(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Invalid getFFM triggers except-continue branch; no FFM select created (lines 180-181)."""
     data = {
@@ -2348,7 +2872,7 @@ async def test_async_setup_entry_skips_invalid_ffm_value(
 
 
 async def test_rotation_select_options_property(hass: HomeAssistant) -> None:
-    """options property returns the internal options list (line 446)."""
+    """The options property returns the internal options list (line 446)."""
     data = {"devices": [{"id": "d1", "name": "D1", "status": {"getSRO": "90"}}]}
     coordinator = _build_coordinator(hass, data)
     select = SyrConnectRotationSelect(coordinator, "d1", "D1")
@@ -2356,7 +2880,9 @@ async def test_rotation_select_options_property(hass: HomeAssistant) -> None:
     assert select.options == ["0", "90", "180", "270"]
 
 
-async def test_rotation_select_current_option_skips_other_devices(hass: HomeAssistant) -> None:
+async def test_rotation_select_current_option_skips_other_devices(
+    hass: HomeAssistant,
+) -> None:
     """current_option continues past non-matching device ids (line 452)."""
     data = {
         "devices": [
@@ -2370,7 +2896,9 @@ async def test_rotation_select_current_option_skips_other_devices(hass: HomeAssi
     assert select.current_option == "90"
 
 
-async def test_rotation_select_current_option_empty_val_returns_none(hass: HomeAssistant) -> None:
+async def test_rotation_select_current_option_empty_val_returns_none(
+    hass: HomeAssistant,
+) -> None:
     """current_option returns None when getSRO is an empty string (line 456)."""
     data = {"devices": [{"id": "d1", "name": "D1", "status": {"getSRO": ""}}]}
     coordinator = _build_coordinator(hass, data)
@@ -2379,7 +2907,9 @@ async def test_rotation_select_current_option_empty_val_returns_none(hass: HomeA
     assert select.current_option is None
 
 
-async def test_rotation_select_current_option_unmatched_returns_str_num(hass: HomeAssistant) -> None:
+async def test_rotation_select_current_option_unmatched_returns_str_num(
+    hass: HomeAssistant,
+) -> None:
     """current_option returns str(num) when value is not in the options list (line 463)."""
     data = {"devices": [{"id": "d1", "name": "D1", "status": {"getSRO": "45"}}]}
     coordinator = _build_coordinator(hass, data)
@@ -2388,7 +2918,9 @@ async def test_rotation_select_current_option_unmatched_returns_str_num(hass: Ho
     assert select.current_option == "45"
 
 
-async def test_rotation_select_current_option_device_not_found(hass: HomeAssistant) -> None:
+async def test_rotation_select_current_option_device_not_found(
+    hass: HomeAssistant,
+) -> None:
     """current_option returns None when the device is absent from coordinator data (line 466)."""
     data = {"devices": [{"id": "other", "name": "Other", "status": {"getSRO": "90"}}]}
     coordinator = _build_coordinator(hass, data)
@@ -2402,8 +2934,10 @@ async def test_rotation_select_current_option_device_not_found(hass: HomeAssista
 # ---------------------------------------------------------------------------
 
 
-async def test_rotation_select_available_coordinator_failed(hass: HomeAssistant) -> None:
-    """available returns False when coordinator.last_update_success is False (lines 488-493)."""
+async def test_rotation_select_available_coordinator_failed(
+    hass: HomeAssistant,
+) -> None:
+    """The available property returns False when coordinator.last_update_success is False (lines 488-493)."""
     data = {"devices": [{"id": "d1", "available": True, "status": {"getSRO": "90"}}]}
     coordinator = _build_coordinator(hass, data)
     coordinator.last_update_success = False
@@ -2413,7 +2947,7 @@ async def test_rotation_select_available_coordinator_failed(hass: HomeAssistant)
 
 
 async def test_rotation_select_available_device_found(hass: HomeAssistant) -> None:
-    """available returns device.available when device is found (lines 488-493)."""
+    """The available property returns device.available when device is found (lines 488-493)."""
     data = {"devices": [{"id": "d1", "available": True, "status": {"getSRO": "90"}}]}
     coordinator = _build_coordinator(hass, data)
     select = SyrConnectRotationSelect(coordinator, "d1", "D1")
@@ -2422,12 +2956,12 @@ async def test_rotation_select_available_device_found(hass: HomeAssistant) -> No
 
 
 async def test_rotation_select_available_device_not_found(hass: HomeAssistant) -> None:
-    """available returns True (default) when device not in coordinator data (lines 488-493)."""
+    """The available property returns False when device not in coordinator data (removed from the account)."""
     data = {"devices": [{"id": "other", "status": {"getSRO": "90"}}]}
     coordinator = _build_coordinator(hass, data)
     select = SyrConnectRotationSelect(coordinator, "d1", "D1")
 
-    assert select.available is True
+    assert select.available is False
 
 
 # ---------------------------------------------------------------------------
@@ -2435,47 +2969,57 @@ async def test_rotation_select_available_device_not_found(hass: HomeAssistant) -
 # ---------------------------------------------------------------------------
 
 
-async def test_discrete_select_current_option_skips_other_devices(hass: HomeAssistant) -> None:
+async def test_discrete_select_current_option_skips_other_devices(
+    hass: HomeAssistant,
+) -> None:
     """current_option continues past non-matching device ids (line 543)."""
     mapping = {"opt_one": 1, "opt_two": 2}
     data = {
         "devices": [
-            {"id": "other", "name": "Other", "status": {"getTEST": "1"}},
-            {"id": "d1", "name": "D1", "status": {"getTEST": "2"}},
+            {"id": "other", "name": "Other", "status": {"getMIH": "1"}},
+            {"id": "d1", "name": "D1", "status": {"getMIH": "2"}},
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getTEST", mapping)
+    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getMIH", mapping)
 
     assert select.current_option == "opt_two"
 
 
-async def test_discrete_select_current_option_empty_val_returns_none(hass: HomeAssistant) -> None:
+async def test_discrete_select_current_option_empty_val_returns_none(
+    hass: HomeAssistant,
+) -> None:
     """current_option returns None when sensor value is an empty string (line 547)."""
     mapping = {"opt_one": 1, "opt_two": 2}
-    data = {"devices": [{"id": "d1", "name": "D1", "status": {"getTEST": ""}}]}
+    data = {"devices": [{"id": "d1", "name": "D1", "status": {"getMIH": ""}}]}
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getTEST", mapping)
+    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getMIH", mapping)
 
     assert select.current_option is None
 
 
-async def test_discrete_select_current_option_invalid_val_returns_none(hass: HomeAssistant) -> None:
+async def test_discrete_select_current_option_invalid_val_returns_none(
+    hass: HomeAssistant,
+) -> None:
     """current_option returns None when value cannot be converted to int (lines 550-551)."""
     mapping = {"opt_one": 1, "opt_two": 2}
-    data = {"devices": [{"id": "d1", "name": "D1", "status": {"getTEST": "not_a_number"}}]}
+    data = {
+        "devices": [{"id": "d1", "name": "D1", "status": {"getMIH": "not_a_number"}}]
+    }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getTEST", mapping)
+    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getMIH", mapping)
 
     assert select.current_option is None
 
 
-async def test_discrete_select_current_option_device_not_found(hass: HomeAssistant) -> None:
+async def test_discrete_select_current_option_device_not_found(
+    hass: HomeAssistant,
+) -> None:
     """current_option returns None when device is absent from coordinator data (line 556)."""
     mapping = {"opt_one": 1, "opt_two": 2}
-    data = {"devices": [{"id": "other", "status": {"getTEST": "1"}}]}
+    data = {"devices": [{"id": "other", "status": {"getMIH": "1"}}]}
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getTEST", mapping)
+    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getMIH", mapping)
 
     assert select.current_option is None
 
@@ -2485,35 +3029,37 @@ async def test_discrete_select_current_option_device_not_found(hass: HomeAssista
 # ---------------------------------------------------------------------------
 
 
-async def test_discrete_select_available_coordinator_failed(hass: HomeAssistant) -> None:
-    """available returns False when coordinator.last_update_success is False (lines 575-580)."""
+async def test_discrete_select_available_coordinator_failed(
+    hass: HomeAssistant,
+) -> None:
+    """The available property returns False when coordinator.last_update_success is False (lines 575-580)."""
     mapping = {"opt_one": 1}
-    data = {"devices": [{"id": "d1", "available": True, "status": {"getTEST": "1"}}]}
+    data = {"devices": [{"id": "d1", "available": True, "status": {"getMIH": "1"}}]}
     coordinator = _build_coordinator(hass, data)
     coordinator.last_update_success = False
-    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getTEST", mapping)
+    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getMIH", mapping)
 
     assert select.available is False
 
 
 async def test_discrete_select_available_device_found(hass: HomeAssistant) -> None:
-    """available returns device.available when device is found (lines 575-580)."""
+    """The available property returns device.available when device is found (lines 575-580)."""
     mapping = {"opt_one": 1}
-    data = {"devices": [{"id": "d1", "available": True, "status": {"getTEST": "1"}}]}
+    data = {"devices": [{"id": "d1", "available": True, "status": {"getMIH": "1"}}]}
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getTEST", mapping)
+    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getMIH", mapping)
 
     assert select.available is True
 
 
 async def test_discrete_select_available_device_not_found(hass: HomeAssistant) -> None:
-    """available returns True (default) when device not in coordinator data (lines 575-580)."""
+    """The available property returns False when device not in coordinator data (removed from the account)."""
     mapping = {"opt_one": 1}
-    data = {"devices": [{"id": "other", "status": {"getTEST": "1"}}]}
+    data = {"devices": [{"id": "other", "status": {"getMIH": "1"}}]}
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getTEST", mapping)
+    select = SyrConnectDiscreteSelect(coordinator, "d1", "D1", "getMIH", mapping)
 
-    assert select.available is True
+    assert select.available is False
 
 
 # ---------------------------------------------------------------------------
@@ -2521,33 +3067,20 @@ async def test_discrete_select_available_device_not_found(hass: HomeAssistant) -
 # ---------------------------------------------------------------------------
 
 
-async def test_prf_select_entity_category_when_getprf_configured(hass: HomeAssistant) -> None:
-    """entity_category is set when getPRF is in _SYR_CONNECT_SENSOR_CONFIG (line 609)."""
+async def test_prf_select_options_skips_other_devices(hass: HomeAssistant) -> None:
+    """The options property continues past non-matching device ids (line 616)."""
     data = {
         "devices": [
             {
+                "id": "other",
+                "name": "Other",
+                "status": {"getPA1": "true", "getPN1": "Other Profile"},
+            },
+            {
                 "id": "d1",
                 "name": "D1",
-                "status": {"getPA1": "true", "getPN1": "Profile A", "getPRF": "1"},
-            }
-        ]
-    }
-    coordinator = _build_coordinator(hass, data)
-    with patch(
-        "custom_components.syr_connect.select._SYR_CONNECT_SENSOR_CONFIG",
-        {"getPRF": True},
-    ):
-        select = SyrConnectPrfSelect(coordinator, "d1", "D1")
-
-    assert hasattr(select, "_attr_entity_category")
-
-
-async def test_prf_select_options_skips_other_devices(hass: HomeAssistant) -> None:
-    """options continues past non-matching device ids (line 616)."""
-    data = {
-        "devices": [
-            {"id": "other", "name": "Other", "status": {"getPA1": "true", "getPN1": "Other Profile"}},
-            {"id": "d1", "name": "D1", "status": {"getPA1": "true", "getPN1": "My Profile"}},
+                "status": {"getPA1": "true", "getPN1": "My Profile"},
+            },
         ]
     }
     coordinator = _build_coordinator(hass, data)
@@ -2557,11 +3090,17 @@ async def test_prf_select_options_skips_other_devices(hass: HomeAssistant) -> No
     assert "Other Profile" not in select.options
 
 
-async def test_prf_select_async_select_option_skips_other_devices(hass: HomeAssistant) -> None:
+async def test_prf_select_async_select_option_skips_other_devices(
+    hass: HomeAssistant,
+) -> None:
     """async_select_option continues past non-matching device ids (line 652)."""
     data = {
         "devices": [
-            {"id": "other", "name": "Other", "status": {"getPA1": "true", "getPN1": "Other Profile"}},
+            {
+                "id": "other",
+                "name": "Other",
+                "status": {"getPA1": "true", "getPN1": "Other Profile"},
+            },
             {
                 "id": "d1",
                 "name": "D1",
@@ -2579,14 +3118,16 @@ async def test_prf_select_async_select_option_skips_other_devices(hass: HomeAssi
 
 
 # ---------------------------------------------------------------------------
-# getRMO select (SyrConnectDiscreteSelect) — regeneration mode 1–4
+# getRMO select (SyrConnectDiscreteSelect) — regeneration mode 1-4
 # ---------------------------------------------------------------------------
 
 
 async def test_async_setup_entry_creates_rmo_select(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Test async_setup_entry creates a discrete select for getRMO when value >= 1."""
     data = {
@@ -2613,8 +3154,10 @@ async def test_async_setup_entry_creates_rmo_select(
 
 async def test_async_setup_entry_no_rmo_select_when_missing(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Test async_setup_entry does not create an RMO select when getRMO absent."""
     data = {
@@ -2640,8 +3183,10 @@ async def test_async_setup_entry_no_rmo_select_when_missing(
 
 async def test_async_setup_entry_no_rmo_select_when_zero(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Test async_setup_entry does not create an RMO select when getRMO == '0'."""
     data = {
@@ -2667,8 +3212,10 @@ async def test_async_setup_entry_no_rmo_select_when_zero(
 
 async def test_async_setup_entry_no_rmo_select_when_none(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Test async_setup_entry does not create an RMO select when getRMO is None."""
     data = {
@@ -2694,8 +3241,10 @@ async def test_async_setup_entry_no_rmo_select_when_none(
 
 async def test_async_setup_entry_no_rmo_select_when_empty(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Test async_setup_entry does not create an RMO select when getRMO is empty string."""
     data = {
@@ -2721,8 +3270,10 @@ async def test_async_setup_entry_no_rmo_select_when_empty(
 
 async def test_async_setup_entry_no_rmo_select_when_invalid(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Test async_setup_entry does not create an RMO select when getRMO is not numeric."""
     data = {
@@ -2748,20 +3299,28 @@ async def test_async_setup_entry_no_rmo_select_when_invalid(
 
 async def test_rmo_select_options(hass: HomeAssistant) -> None:
     """Test RMO select exposes options '1' through '4'."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "1"}}]}
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "1"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
     assert select.options == ["1", "2", "3", "4"]
 
 
 async def test_rmo_select_current_option(hass: HomeAssistant) -> None:
     """Test RMO select current_option matches the active mode key."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "2"}}]}
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "2"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
     assert select.current_option == "2"
 
@@ -2770,9 +3329,15 @@ async def test_rmo_select_current_option_all_modes(hass: HomeAssistant) -> None:
     """Test RMO select current_option for all four valid mode values."""
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
     for mode in ("1", "2", "3", "4"):
-        data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": mode}}]}
+        data = {
+            "devices": [
+                {"id": "device1", "name": "Device 1", "status": {"getRMO": mode}}
+            ]
+        }
         coordinator = _build_coordinator(hass, data)
-        select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+        select = SyrConnectDiscreteSelect(
+            coordinator, "device1", "Device 1", "getRMO", rmo_map
+        )
         assert select.current_option == mode
 
 
@@ -2780,8 +3345,10 @@ async def test_rmo_select_current_option_all_modes(hass: HomeAssistant) -> None:
 # values must be silently skipped instead of creating a select entity.
 async def test_async_setup_entry_skips_invalid_muco_numeric_values(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Non-numeric getCRS/getRMN/getRMT/getRVT/getTPR values must not create selects."""
     data = {
@@ -2812,13 +3379,15 @@ async def test_async_setup_entry_skips_invalid_muco_numeric_values(
 # Line 371 — devices without an "id" must be skipped by the MuCo conditional sync.
 async def test_muco_conditional_select_skips_device_without_id(
     hass: HomeAssistant,
-    create_mock_entry_with_coordinator,
-    mock_add_entities,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """The conditional MuCo select sync skips devices without an id."""
     data = {
         "devices": [
-            {"name": "No ID Device", "project_id": "project1", "status": {}},
+            {"id": "", "name": "No ID Device", "project_id": "project1", "status": {}},
         ]
     }
     mock_config_entry, _ = create_mock_entry_with_coordinator(data)
@@ -2831,37 +3400,56 @@ async def test_muco_conditional_select_skips_device_without_id(
 
 # Line 776 — current_option returns the sentinel option (mapped value None) when the
 # raw status value is empty and the mapping defines such a sentinel (e.g. "none"/"undefined").
-async def test_discrete_select_current_option_returns_none_sentinel(hass: HomeAssistant) -> None:
+async def test_discrete_select_current_option_returns_none_sentinel(
+    hass: HomeAssistant,
+) -> None:
     """current_option returns the sentinel option when the raw value is empty."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getCRT": ""}}]}
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getCRT": ""}}]
+    }
     coordinator = _build_coordinator(hass, data)
     crt_map = {"none": None, "0": 0, "1": 1, "2": 2}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getCRT", crt_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getCRT", crt_map
+    )
 
     assert select.current_option == "none"
 
 
 # Lines 794-795 — selecting a sentinel option (mapped value None) must be rejected without
 # calling the coordinator, since there is no underlying raw value to send.
-async def test_discrete_select_async_select_option_rejects_none_value(hass: HomeAssistant) -> None:
-    """async_select_option logs and returns for options mapped to None."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getCRT": "1"}}]}
+async def test_discrete_select_async_select_option_rejects_none_value(
+    hass: HomeAssistant,
+) -> None:
+    """async_select_option rejects options mapped to None."""
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getCRT": "1"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     coordinator.async_set_device_value = AsyncMock()
     crt_map = {"none": None, "0": 0, "1": 1, "2": 2}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getCRT", crt_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getCRT", crt_map
+    )
 
-    await select.async_select_option("none")
+    with pytest.raises(ServiceValidationError):
+        await select.async_select_option("none")
 
     coordinator.async_set_device_value.assert_not_called()
 
 
 async def test_rmo_select_current_option_none_when_invalid(hass: HomeAssistant) -> None:
     """Test RMO select current_option is None when value cannot be converted to int."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "invalid"}}]}
+    data = {
+        "devices": [
+            {"id": "device1", "name": "Device 1", "status": {"getRMO": "invalid"}}
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
     assert select.current_option is None
 
@@ -2871,18 +3459,24 @@ async def test_rmo_select_current_option_none_when_missing(hass: HomeAssistant) 
     data = {"devices": [{"id": "device1", "name": "Device 1", "status": {}}]}
     coordinator = _build_coordinator(hass, data)
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
     assert select.current_option is None
 
 
 async def test_rmo_select_option_selection(hass: HomeAssistant) -> None:
     """Test selecting an RMO option sends setRMO with the correct int value."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "1"}}]}
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "1"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     coordinator.async_set_device_value = AsyncMock()
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
     await select.async_select_option("3")
 
@@ -2893,132 +3487,154 @@ async def test_rmo_select_option_selection_all_modes(hass: HomeAssistant) -> Non
     """Test that each RMO option correctly sends the corresponding int value."""
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
     for option, expected_int in rmo_map.items():
-        data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": option}}]}
+        data = {
+            "devices": [
+                {"id": "device1", "name": "Device 1", "status": {"getRMO": option}}
+            ]
+        }
         coordinator = _build_coordinator(hass, data)
         coordinator.async_set_device_value = AsyncMock()
-        select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+        select = SyrConnectDiscreteSelect(
+            coordinator, "device1", "Device 1", "getRMO", rmo_map
+        )
 
         await select.async_select_option(option)
 
-        coordinator.async_set_device_value.assert_called_once_with("device1", "setRMO", expected_int)
+        coordinator.async_set_device_value.assert_called_once_with(
+            "device1", "setRMO", expected_int
+        )
 
 
 async def test_rmo_select_option_selection_invalid(hass: HomeAssistant) -> None:
-    """Test that selecting an unknown RMO option does not call the coordinator."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "1"}}]}
+    """Test that selecting an unknown RMO option is rejected."""
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "1"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     coordinator.async_set_device_value = AsyncMock()
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
-    await select.async_select_option("99")
+    with pytest.raises(ServiceValidationError):
+        await select.async_select_option("99")
 
     coordinator.async_set_device_value.assert_not_called()
 
 
 async def test_rmo_select_error_on_set(hass: HomeAssistant) -> None:
     """Test RMO select raises HomeAssistantError when coordinator fails."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "2"}}]}
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "2"}}]
+    }
     coordinator = _build_coordinator(hass, data)
 
-    async def raiser(*args, **kwargs):
+    async def raiser(*args: Any, **kwargs: Any) -> None:
         raise ValueError("boom")
 
     coordinator.async_set_device_value = AsyncMock(side_effect=raiser)
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
-    with pytest.raises(HomeAssistantError, match="Failed to set getRMO"):
+    with pytest.raises(HomeAssistantError, match="set_value_failed"):
         await select.async_select_option("2")
 
 
 async def test_rmo_select_unavailable_coordinator(hass: HomeAssistant) -> None:
     """Test RMO select is unavailable when coordinator update failed."""
-    data = {"devices": [{"id": "device1", "available": True, "status": {"getRMO": "1"}}]}
+    data = {
+        "devices": [{"id": "device1", "available": True, "status": {"getRMO": "1"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     coordinator.last_update_success = False
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
     assert select.available is False
 
 
 async def test_rmo_select_unavailable_device(hass: HomeAssistant) -> None:
     """Test RMO select is unavailable when the device reports unavailable."""
-    data = {"devices": [{"id": "device1", "available": False, "status": {"getRMO": "1"}}]}
+    data = {
+        "devices": [{"id": "device1", "available": False, "status": {"getRMO": "1"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
     assert select.available is False
 
 
 async def test_rmo_select_available_true(hass: HomeAssistant) -> None:
     """Test RMO select is available when coordinator and device are healthy."""
-    data = {"devices": [{"id": "device1", "available": True, "status": {"getRMO": "1"}}]}
+    data = {
+        "devices": [{"id": "device1", "available": True, "status": {"getRMO": "1"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
     assert select.available is True
 
 
 async def test_rmo_select_entity_category_is_config(hass: HomeAssistant) -> None:
-    """Test RMO select entity_category is EntityCategory.CONFIG (getRMO in SENSOR_CONFIG)."""
-    from homeassistant.const import EntityCategory
+    """Test RMO select entity_category is EntityCategory.CONFIG."""
 
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "1"}}]}
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getRMO": "1"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     rmo_map = {"1": 1, "2": 2, "3": 3, "4": 4}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRMO", rmo_map)
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRMO", rmo_map
+    )
 
-    assert select._attr_entity_category == EntityCategory.CONFIG
+    assert select.entity_category == EntityCategory.CONFIG
 
 
-def test_regeneration_select_disabled_by_default_when_in_set(hass):
+def test_regeneration_select_disabled_by_default_when_in_set(
+    hass: HomeAssistant,
+) -> None:
     """Test SyrConnectRegenerationSelect sets entity_registry_enabled_default=False when getRTM is in DISABLED_BY_DEFAULT."""
-    from custom_components.syr_connect.const import _SYR_CONNECT_SENSOR_DISABLED_BY_DEFAULT
 
     data = {"devices": [{"id": "dev1", "name": "D1", "status": {}}]}
     coordinator = _build_coordinator(hass, data)
-    with patch(
-        "custom_components.syr_connect.select._SYR_CONNECT_SENSOR_DISABLED_BY_DEFAULT",
-        _SYR_CONNECT_SENSOR_DISABLED_BY_DEFAULT | {"getRTM"},
-    ):
+    with _patch_select_description("getRTM", entity_registry_enabled_default=False):
         select = SyrConnectRegenerationSelect(coordinator, "dev1", "D1")
 
-    assert select._attr_entity_registry_enabled_default is False
+    assert select.entity_registry_enabled_default is False
 
 
-def test_discrete_select_disabled_by_default_when_in_set(hass):
+def test_discrete_select_disabled_by_default_when_in_set(hass: HomeAssistant) -> None:
     """Test SyrConnectDiscreteSelect sets entity_registry_enabled_default=False when key is in DISABLED_BY_DEFAULT."""
-    from custom_components.syr_connect.const import _SYR_CONNECT_SENSOR_DISABLED_BY_DEFAULT
 
     data = {"devices": [{"id": "dev1", "name": "D1", "status": {}}]}
     coordinator = _build_coordinator(hass, data)
     rmo_map = {"1": 1, "2": 2}
-    with patch(
-        "custom_components.syr_connect.select._SYR_CONNECT_SENSOR_DISABLED_BY_DEFAULT",
-        _SYR_CONNECT_SENSOR_DISABLED_BY_DEFAULT | {"getRMO"},
-    ):
+    with _patch_select_description("getRMO", entity_registry_enabled_default=False):
         select = SyrConnectDiscreteSelect(coordinator, "dev1", "D1", "getRMO", rmo_map)
 
-    assert select._attr_entity_registry_enabled_default is False
+    assert select.entity_registry_enabled_default is False
 
 
-def test_prf_select_disabled_by_default_when_in_set(hass):
+def test_prf_select_disabled_by_default_when_in_set(hass: HomeAssistant) -> None:
     """Test SyrConnectPrfSelect sets entity_registry_enabled_default=False when getPRF is in DISABLED_BY_DEFAULT."""
-    from custom_components.syr_connect.const import _SYR_CONNECT_SENSOR_DISABLED_BY_DEFAULT
 
     data = {"devices": [{"id": "dev1", "name": "D1", "status": {}}]}
     coordinator = _build_coordinator(hass, data)
-    with patch(
-        "custom_components.syr_connect.select._SYR_CONNECT_SENSOR_DISABLED_BY_DEFAULT",
-        _SYR_CONNECT_SENSOR_DISABLED_BY_DEFAULT | {"getPRF"},
-    ):
+    with _patch_select_description("getPRF", entity_registry_enabled_default=False):
         select = SyrConnectPrfSelect(coordinator, "dev1", "D1")
 
-    assert select._attr_entity_registry_enabled_default is False
+    assert select.entity_registry_enabled_default is False
 
 
 # --- SafeFloor: alarm/humidity/temperature thresholds and sync/measurement intervals ---
@@ -3036,7 +3652,11 @@ _SAFEFLOOR_STATUS = {
 
 
 async def test_async_setup_entry_creates_safefloor_threshold_selects(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """async_setup_entry creates all 7 SafeFloor threshold/interval selects when present in status."""
     data = {
@@ -3055,18 +3675,35 @@ async def test_async_setup_entry_creates_safefloor_threshold_selects(
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     keys = {getattr(e, "_sensor_key", None) for e in entities}
-    assert {"getALD", "getMIH", "getMXH", "getMIT", "getMXT", "getRCP", "getWMP"} <= keys
+    assert {
+        "getALD",
+        "getMIH",
+        "getMXH",
+        "getMIT",
+        "getMXT",
+        "getRCP",
+        "getWMP",
+    } <= keys
 
 
 async def test_async_setup_entry_skips_invalid_safefloor_threshold_values(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Non-numeric/empty SafeFloor threshold values must not create select entities."""
     status = {key: "" for key in _SAFEFLOOR_STATUS if key != "getVER"}
     status["getVER"] = _SAFEFLOOR_STATUS["getVER"]
     data = {
         "devices": [
-            {"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
         ]
     }
     mock_config_entry, _ = create_mock_entry_with_coordinator(data)
@@ -3075,18 +3712,29 @@ async def test_async_setup_entry_skips_invalid_safefloor_threshold_values(
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     keys = {getattr(e, "_sensor_key", None) for e in entities}
-    assert not ({"getALD", "getMIH", "getMXH", "getMIT", "getMXT", "getRCP", "getWMP"} & keys)
+    assert not (
+        {"getALD", "getMIH", "getMXH", "getMIT", "getMXT", "getRCP", "getWMP"} & keys
+    )
 
 
 async def test_async_setup_entry_skips_non_numeric_safefloor_threshold_values(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Garbage (non-numeric) SafeFloor threshold values must not create select entities."""
     status = {key: "n/a" for key in _SAFEFLOOR_STATUS if key != "getVER"}
     status["getVER"] = _SAFEFLOOR_STATUS["getVER"]
     data = {
         "devices": [
-            {"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
         ]
     }
     mock_config_entry, _ = create_mock_entry_with_coordinator(data)
@@ -3095,27 +3743,45 @@ async def test_async_setup_entry_skips_non_numeric_safefloor_threshold_values(
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     keys = {getattr(e, "_sensor_key", None) for e in entities}
-    assert not ({"getALD", "getMIH", "getMXH", "getMIT", "getMXT", "getRCP", "getWMP"} & keys)
+    assert not (
+        {"getALD", "getMIH", "getMXH", "getMIT", "getMXT", "getRCP", "getWMP"} & keys
+    )
 
 
 async def test_mih_mxh_select_current_option(hass: HomeAssistant) -> None:
     """getMIH/getMXH current_option reflects the raw percentage value, including the Off boundary."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getMIH": "0", "getMXH": "100"}}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "status": {"getMIH": "0", "getMXH": "100"},
+            }
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
 
     mih_map = {str(v): v for v in range(0, 96, 5)}
     mxh_map = {str(v): v for v in range(5, 101, 5)}
-    mih = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getMIH", mih_map)
-    mxh = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getMXH", mxh_map)
+    mih = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getMIH", mih_map
+    )
+    mxh = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getMXH", mxh_map
+    )
 
     assert mih.current_option == "0"
     assert mxh.current_option == "100"
 
 
 async def test_ald_select_current_option_and_selection(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
-    """getALD shows the documented steps in HA seconds; selecting an option sends setALD."""
+    """The getALD shows the documented steps in HA seconds; selecting an option sends setALD."""
     data = {
         "devices": [
             {
@@ -3134,8 +3800,21 @@ async def test_ald_select_current_option_and_selection(
 
     select = next(e for e in entities if getattr(e, "_sensor_key", None) == "getALD")
     assert select.options == [
-        "1 s", "5 s", "10 s", "20 s", "30 s",
-        "60 s", "120 s", "180 s", "240 s", "300 s", "360 s", "420 s", "480 s", "540 s", "600 s",
+        "1 s",
+        "5 s",
+        "10 s",
+        "20 s",
+        "30 s",
+        "60 s",
+        "120 s",
+        "180 s",
+        "240 s",
+        "300 s",
+        "360 s",
+        "420 s",
+        "480 s",
+        "540 s",
+        "600 s",
     ]
     assert select.current_option == "10 s"
 
@@ -3144,62 +3823,171 @@ async def test_ald_select_current_option_and_selection(
     coordinator.async_set_device_value.assert_called_once_with("device1", "setALD", 120)
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1", "1 s"),  # not "10 s", which also starts with "1"
+        ("5", "5 s"),
+        ("10", "10 s"),
+        ("20", "20 s"),
+        ("2", None),  # off the documented steps: unknown, not "20 s"
+    ],
+)
+async def test_ald_select_current_option_matches_whole_number(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    raw: str,
+    expected: str | None,
+) -> None:
+    """A value off the step list is not shown as the option that merely starts with it (2 is not "20 s")."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "project_id": "project1",
+                "status": {"getVER": "Syr Floorsensor 2.23", "getALD": raw},
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    select = next(e for e in entities if getattr(e, "_sensor_key", None) == "getALD")
+    # Values off the list are returned unmatched, so HA shows the state as unknown
+    assert (
+        select.current_option if select.current_option in select.options else None
+    ) == expected
+
+
 async def test_mit_mxt_select_off_sentinel_current_option(hass: HomeAssistant) -> None:
     """getMIT/getMXT expose a dedicated 'Off' sentinel option outside the normal stepped range."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getMIT": "-400", "getMXT": "700"}}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "status": {"getMIT": "-400", "getMXT": "700"},
+            }
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
-    mit_map = {"off": -400} | {(f"minus_{-d * 10}" if d < 0 else str(d * 10)): d * 10 for d in range(-30, 50)}
+    mit_map = {"off": -400} | {
+        (f"minus_{-d * 10}" if d < 0 else str(d * 10)): d * 10 for d in range(-30, 50)
+    }
     mxt_map = {str(d * 10): d * 10 for d in range(1, 51)} | {"off": 700}
 
-    mit = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getMIT", mit_map)
-    mxt = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getMXT", mxt_map)
+    mit = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getMIT", mit_map
+    )
+    mxt = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getMXT", mxt_map
+    )
 
     assert mit.current_option == "off"
     assert mxt.current_option == "off"
 
 
-async def test_mit_select_normal_value_current_option_and_selection(hass: HomeAssistant) -> None:
-    """getMIT current_option reflects a normal in-range degree value, and selecting 'Off' sends -400."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getMIT": "0"}}]}
+async def test_mit_select_normal_value_current_option_and_selection(
+    hass: HomeAssistant,
+) -> None:
+    """The getMIT current_option reflects a normal in-range degree value, and selecting 'Off' sends -400."""
+    data = {
+        "devices": [{"id": "device1", "name": "Device 1", "status": {"getMIT": "0"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     coordinator.async_set_device_value = AsyncMock()
-    mit_map = {"off": -400} | {(f"minus_{-d * 10}" if d < 0 else str(d * 10)): d * 10 for d in range(-30, 50)}
-    select = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getMIT", mit_map)
+    mit_map = {"off": -400} | {
+        (f"minus_{-d * 10}" if d < 0 else str(d * 10)): d * 10 for d in range(-30, 50)
+    }
+    select = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getMIT", mit_map
+    )
 
     assert select.current_option == "0"
 
     await select.async_select_option("off")
 
-    coordinator.async_set_device_value.assert_called_once_with("device1", "setMIT", -400)
+    coordinator.async_set_device_value.assert_called_once_with(
+        "device1", "setMIT", -400
+    )
 
 
 async def test_rcp_wmp_select_current_option(hass: HomeAssistant) -> None:
     """getRCP/getWMP current_option resolves the matching raw seconds value."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getRCP": "43200", "getWMP": "3600"}}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "status": {"getRCP": "43200", "getWMP": "3600"},
+            }
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
     rcp_map = {
-        "3600": 3600, "7200": 7200, "10800": 10800, "21600": 21600, "43200": 43200,
-        "86400": 86400, "172800": 172800, "259200": 259200, "345600": 345600,
-        "432000": 432000, "518400": 518400, "604800": 604800, "691200": 691200,
-        "777600": 777600, "1209600": 1209600,
+        "3600": 3600,
+        "7200": 7200,
+        "10800": 10800,
+        "21600": 21600,
+        "43200": 43200,
+        "86400": 86400,
+        "172800": 172800,
+        "259200": 259200,
+        "345600": 345600,
+        "432000": 432000,
+        "518400": 518400,
+        "604800": 604800,
+        "691200": 691200,
+        "777600": 777600,
+        "1209600": 1209600,
     }
     wmp_map = {
-        "60": 60, "600": 600, "900": 900, "1800": 1800,
-        "3600": 3600, "7200": 7200, "10800": 10800, "21600": 21600, "43200": 43200,
+        "60": 60,
+        "600": 600,
+        "900": 900,
+        "1800": 1800,
+        "3600": 3600,
+        "7200": 7200,
+        "10800": 10800,
+        "21600": 21600,
+        "43200": 43200,
     }
 
-    rcp = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getRCP", rcp_map)
-    wmp = SyrConnectDiscreteSelect(coordinator, "device1", "Device 1", "getWMP", wmp_map)
+    rcp = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getRCP", rcp_map
+    )
+    wmp = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getWMP", wmp_map
+    )
 
     assert rcp.current_option == "43200"
     assert wmp.current_option == "3600"
 
 
 async def test_rmt_select_options_use_ha_minutes_unit(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
-    """getRMT options carry Home Assistant's minute unit, and selecting one writes the plain number."""
-    data = {"devices": [{"id": "device1", "name": "Test Device", "project_id": "project1", "status": {"getRMT": "30"}}]}
+    """The getRMT options carry Home Assistant's minute unit, and selecting one writes the plain number."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": {"getRMT": "30"},
+            }
+        ]
+    }
     mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
     mock_coordinator.async_set_device_value = AsyncMock()
     entities, async_add_entities = mock_add_entities()
@@ -3207,24 +3995,39 @@ async def test_rmt_select_options_use_ha_minutes_unit(
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     rmt = next(e for e in entities if getattr(e, "_sensor_key", None) == "getRMT")
-    assert UnitOfTime.MINUTES == "min"
+    assert UnitOfTime.MINUTES.value == "min"
     assert rmt.options[0] == "1 min"
     assert all(opt.endswith(f" {UnitOfTime.MINUTES}") for opt in rmt.options)
     assert rmt.current_option == "30 min"
 
     await rmt.async_select_option("45 min")
 
-    mock_coordinator.async_set_device_value.assert_called_once_with("device1", "setRMT", 45)
+    mock_coordinator.async_set_device_value.assert_called_once_with(
+        "device1", "setRMT", 45
+    )
 
 
 async def test_muco_select_option_units_come_from_central_unit_map(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
-    """Unit text of getCRS/getRVT/getLOT options comes from _SYR_CONNECT_SENSOR_UNIT, not hard-coded strings."""
-    from custom_components.syr_connect.const import _SYR_CONNECT_SENSOR_UNIT
+    """Unit text of getCRS/getRVT/getLOT options comes from the sensor descriptions, not hard-coded strings."""
 
     status = {"getCRS": "3", "getCRT": "1", "getRVT": "100", "getLOT": "7"}
-    data = {"devices": [{"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "model": _conelclearpro_connect_TEST_MUCO_FILLING_MODEL,
+                "status": status,
+            }
+        ]
+    }
     mock_config_entry, _ = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
@@ -3232,7 +4035,9 @@ async def test_muco_select_option_units_come_from_central_unit_map(
 
     by_key = {e._sensor_key: e for e in entities if hasattr(e, "_sensor_key")}
     for key, value in {"getCRS": "7", "getRVT": "100", "getLOT": "70"}.items():
-        unit = _SYR_CONNECT_SENSOR_UNIT[key]
+        unit = select_module._conelclearpro_connect_SENSOR_DESCRIPTIONS[
+            key
+        ].native_unit_of_measurement
         assert by_key[key].options, key
         assert all(opt.endswith(f" {unit}") for opt in by_key[key].options), key
         assert by_key[key].current_option == f"{value} {unit}", key
@@ -3242,17 +4047,34 @@ async def test_muco_select_option_units_come_from_central_unit_map(
 
 
 async def test_async_setup_entry_creates_hardness_selects_for_lex(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """The plain LEX family (here i-LEX 10) gets raw/outlet water hardness selects."""
     status = {"getCNA": "L10", "getIWH": "20", "getOWH": "2", "getWHU": "0"}
-    data = {"devices": [{"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
     mock_config_entry, _ = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
-    by_key = {e._sensor_key: e for e in entities if getattr(e, "_sensor_key", None) in ("getIWH", "getOWH")}
+    by_key = {
+        e._sensor_key: e
+        for e in entities
+        if getattr(e, "_sensor_key", None) in ("getIWH", "getOWH")
+    }
     assert set(by_key) == {"getIWH", "getOWH"}
     assert all(isinstance(e, SyrConnectHardnessSelect) for e in by_key.values())
     assert by_key["getIWH"].options[0] == "1 °dH"
@@ -3264,11 +4086,24 @@ async def test_async_setup_entry_creates_hardness_selects_for_lex(
 
 
 async def test_async_setup_entry_skips_non_numeric_hardness_values(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Non-numeric getIWH/getOWH values must not create hardness selects."""
     status = {"getCNA": "L10", "getIWH": "n/a", "getOWH": "n/a", "getWHU": "0"}
-    data = {"devices": [{"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
     mock_config_entry, _ = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
@@ -3280,13 +4115,23 @@ async def test_async_setup_entry_skips_non_numeric_hardness_values(
 async def test_hardness_select_sends_set_command(hass: HomeAssistant) -> None:
     """Selecting a hardness option sends setIWH/setOWH with the plain number, without the unit."""
     data = {
-        "devices": [{"id": "device1", "name": "Device 1", "status": {"getIWH": "20", "getOWH": "2", "getWHU": "1"}}]
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "status": {"getIWH": "20", "getOWH": "2", "getWHU": "1"},
+            }
+        ]
     }
     coordinator = _build_coordinator(hass, data)
     coordinator.async_set_device_value = AsyncMock()
 
-    iwh = SyrConnectHardnessSelect(coordinator, "device1", "Device 1", "getIWH", 1, 100, 1)
-    owh = SyrConnectHardnessSelect(coordinator, "device1", "Device 1", "getOWH", 0, 100, 1)
+    iwh = SyrConnectHardnessSelect(
+        coordinator, "device1", "Device 1", "getIWH", 1, 100, 1
+    )
+    owh = SyrConnectHardnessSelect(
+        coordinator, "device1", "Device 1", "getOWH", 0, 100, 1
+    )
     await iwh.async_select_option("36 °fH")
     await owh.async_select_option("0 °fH")
 
@@ -3294,15 +4139,42 @@ async def test_hardness_select_sends_set_command(hass: HomeAssistant) -> None:
     coordinator.async_set_device_value.assert_any_call("device1", "setOWH", 0)
 
 
+# The hardness selects exist for the LEX family only, which numbers the getWHU units its own way
+_conelclearpro_connect_TEST_LEX_MODEL = next(
+    model for model in MODEL_SIGNATURES if model.name == "lex30"
+)
+
+
 @pytest.mark.parametrize(
     ("whu", "unit"),
-    [("0", "°dH"), ("1", "°fH"), ("2", "ppm"), ("3", "mmol/l")],
+    [
+        ("0", "°dH"),
+        ("1", "°fH"),
+        ("2", "°e"),
+        ("3", "mg/l CaCO₃"),
+        ("4", "ppm"),
+        ("5", "mmol/l"),
+        ("6", "mval/l"),
+    ],
 )
-async def test_hardness_select_unit_follows_whu(hass: HomeAssistant, whu: str, unit: str) -> None:
+async def test_hardness_select_unit_follows_whu(
+    hass: HomeAssistant, whu: str, unit: str
+) -> None:
     """The unit suffix of options and current_option follows the device's getWHU setting."""
-    data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getIWH": "36", "getWHU": whu}}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "model": _conelclearpro_connect_TEST_LEX_MODEL,
+                "status": {"getIWH": "36", "getWHU": whu},
+            }
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
-    select = SyrConnectHardnessSelect(coordinator, "device1", "Device 1", "getIWH", 1, 100, 1)
+    select = SyrConnectHardnessSelect(
+        coordinator, "device1", "Device 1", "getIWH", 1, 100, 1
+    )
 
     assert select.options[0] == f"1 {unit}"
     assert select.current_option == f"36 {unit}"
@@ -3310,23 +4182,39 @@ async def test_hardness_select_unit_follows_whu(hass: HomeAssistant, whu: str, u
 
 
 @pytest.mark.parametrize("whu", [None, "", "invalid", "9"])
-async def test_hardness_select_without_known_unit_shows_plain_numbers(hass: HomeAssistant, whu: str | None) -> None:
+async def test_hardness_select_without_known_unit_shows_plain_numbers(
+    hass: HomeAssistant, whu: str | None
+) -> None:
     """A missing, empty, invalid or unknown getWHU leaves the options without a unit suffix."""
     status = {"getIWH": "36"}
     if whu is not None:
         status["getWHU"] = whu
-    coordinator = _build_coordinator(hass, {"devices": [{"id": "device1", "name": "Device 1", "status": status}]})
-    select = SyrConnectHardnessSelect(coordinator, "device1", "Device 1", "getIWH", 1, 100, 1)
+    coordinator = _build_coordinator(
+        hass, {"devices": [{"id": "device1", "name": "Device 1", "status": status}]}
+    )
+    select = SyrConnectHardnessSelect(
+        coordinator, "device1", "Device 1", "getIWH", 1, 100, 1
+    )
 
     assert select.options[0] == "1"
     assert select.current_option == "36"
 
 
-async def test_hardness_select_unit_updates_when_whu_changes(hass: HomeAssistant) -> None:
+async def test_hardness_select_unit_updates_when_whu_changes(
+    hass: HomeAssistant,
+) -> None:
     """Changing getWHU on the device is reflected immediately, without recreating the entity."""
     status = {"getIWH": "20", "getWHU": "0"}
-    coordinator = _build_coordinator(hass, {"devices": [{"id": "device1", "name": "Device 1", "status": status}]})
-    select = SyrConnectHardnessSelect(coordinator, "device1", "Device 1", "getIWH", 1, 100, 1)
+    device = {
+        "id": "device1",
+        "name": "Device 1",
+        "model": _conelclearpro_connect_TEST_LEX_MODEL,
+        "status": status,
+    }
+    coordinator = _build_coordinator(hass, {"devices": [device]})
+    select = SyrConnectHardnessSelect(
+        coordinator, "device1", "Device 1", "getIWH", 1, 100, 1
+    )
     assert select.current_option == "20 °dH"
 
     status["getWHU"] = "1"
@@ -3337,19 +4225,36 @@ async def test_hardness_select_unit_updates_when_whu_changes(hass: HomeAssistant
 
 async def test_hardness_select_unit_when_device_missing(hass: HomeAssistant) -> None:
     """A device that vanished from the coordinator data yields plain options and no current option."""
-    coordinator = _build_coordinator(hass, {"devices": [{"id": "other", "name": "Other", "status": {}}]})
-    select = SyrConnectHardnessSelect(coordinator, "device1", "Device 1", "getIWH", 1, 100, 1)
+    coordinator = _build_coordinator(
+        hass, {"devices": [{"id": "other", "name": "Other", "status": {}}]}
+    )
+    select = SyrConnectHardnessSelect(
+        coordinator, "device1", "Device 1", "getIWH", 1, 100, 1
+    )
 
     assert select.options[0] == "1"
     assert select.current_option is None
 
 
-async def test_hardness_select_current_option_prefers_exact_match(hass: HomeAssistant) -> None:
+async def test_hardness_select_current_option_prefers_exact_match(
+    hass: HomeAssistant,
+) -> None:
     """Values like 1, 10 and 100 must not resolve to a longer option that merely starts with them."""
     for raw in ("1", "10", "100"):
-        data = {"devices": [{"id": "device1", "name": "Device 1", "status": {"getIWH": raw, "getWHU": "0"}}]}
+        data = {
+            "devices": [
+                {
+                    "id": "device1",
+                    "name": "Device 1",
+                    "model": _conelclearpro_connect_TEST_LEX_MODEL,
+                    "status": {"getIWH": raw, "getWHU": "0"},
+                }
+            ]
+        }
         coordinator = _build_coordinator(hass, data)
-        select = SyrConnectHardnessSelect(coordinator, "device1", "Device 1", "getIWH", 1, 100, 1)
+        select = SyrConnectHardnessSelect(
+            coordinator, "device1", "Device 1", "getIWH", 1, 100, 1
+        )
         assert select.current_option == f"{raw} °dH"
 
 
@@ -3362,27 +4267,56 @@ async def test_hardness_select_current_option_prefers_exact_match(hass: HomeAssi
     ],
 )
 async def test_async_setup_entry_creates_hardness_selects_for_lex_plus(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities, cna: str
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    cna: str,
 ) -> None:
     """LEX Plus models also get raw/outlet water hardness selects."""
     status = {"getCNA": cna, "getIWH": "20", "getOWH": "2", "getWHU": "0"}
-    data = {"devices": [{"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
     mock_config_entry, _ = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
-    hardness = {e._sensor_key for e in entities if isinstance(e, SyrConnectHardnessSelect)}
+    hardness = {
+        e._sensor_key for e in entities if isinstance(e, SyrConnectHardnessSelect)
+    }
     assert hardness == {"getIWH", "getOWH"}
 
 
 async def test_async_setup_entry_skips_hardness_selects_for_other_models(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """Models without getIWH/getOWH in their select allowlist keep them as sensors only."""
     cna = "NeoSoft2500"
     status = {"getCNA": cna, "getIWH": "20", "getOWH": "2", "getWHU": "0"}
-    data = {"devices": [{"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
     mock_config_entry, _ = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
@@ -3392,11 +4326,23 @@ async def test_async_setup_entry_skips_hardness_selects_for_other_models(
     assert not ({"getIWH", "getOWH"} & keys)
 
 
-async def test_async_setup_entry_skips_hardness_and_safefloor_selects_without_device_file(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+async def test_async_setup_entry_skips_hardness_and_safefloor_selects_without_device_profile(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """A model without a device file falls back to the global allowlist, which must not expose these keys."""
-    test_sig = [{"display_name": "Test Model", "base_path": "test", "name": "testmodel", "srn_prefix": "999"}]
+    test_sig = [
+        replace(
+            UNKNOWN_MODEL,
+            display_name="Test Model",
+            base_path="test",
+            name="testmodel",
+            srn_prefix="999",
+        )
+    ]
     status = {
         "getSRN": "999AAA0001",
         "getIWH": "20",
@@ -3409,12 +4355,585 @@ async def test_async_setup_entry_skips_hardness_and_safefloor_selects_without_de
         "getRCP": "43200",
         "getWMP": "3600",
     }
-    data = {"devices": [{"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
     mock_config_entry, _ = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
-    with patch("custom_components.syr_connect.models.MODEL_SIGNATURES", test_sig):
+    with patch("custom_components.conelclearpro_connect.models.MODEL_SIGNATURES", test_sig):
         await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     keys = {getattr(e, "_sensor_key", None) for e in entities}
-    assert not keys & {"getIWH", "getOWH", "getALD", "getMIH", "getMXH", "getMIT", "getMXT", "getRCP", "getWMP"}
+    assert not keys & {
+        "getIWH",
+        "getOWH",
+        "getALD",
+        "getMIH",
+        "getMXH",
+        "getMIT",
+        "getMXT",
+        "getRCP",
+        "getWMP",
+    }
+
+
+async def test_selects_infinite_value_counts_as_invalid(hass: HomeAssistant) -> None:
+    """Infinity cannot be converted to int (OverflowError) and gives no option."""
+    assert select_module._is_integer("inf") is False
+
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "status": {
+                    "getSV1": "inf",
+                    "getIWH": "20",
+                    "getWHU": "inf",
+                    "getSRO": "inf",
+                    "getMIH": "inf",
+                    "getPRF": "inf",
+                },
+            }
+        ]
+    }
+    coordinator = _build_coordinator(hass, data)
+
+    numeric = SyrConnectNumericSelect(
+        coordinator, "device1", "Device 1", "getSV1", 0, 25, 1
+    )
+    hardness = SyrConnectHardnessSelect(
+        coordinator, "device1", "Device 1", "getIWH", 1, 100, 1
+    )
+    rotation = SyrConnectRotationSelect(coordinator, "device1", "Device 1")
+    discrete = SyrConnectDiscreteSelect(
+        coordinator, "device1", "Device 1", "getMIH", {"opt_one": 1}
+    )
+    prf = SyrConnectPrfSelect(coordinator, "device1", "Device 1")
+
+    assert numeric.current_option is None
+    assert hardness._unit_label() == ""
+    assert rotation.current_option is None
+    assert discrete.current_option is None
+    assert prf.current_option is None
+
+
+_conelclearpro_connect_TEST_ALLINONEPLUS_MODEL = next(
+    model for model in MODEL_SIGNATURES if model.name == "allinoneplus"
+)
+
+
+@pytest.mark.parametrize(
+    ("crt", "expected"),
+    [
+        pytest.param("0", {"getOWH"}, id="hwe"),
+        pytest.param("1", set(), id="hve"),
+    ],
+)
+async def test_allinoneplus_owh_select_only_for_hwe_cartridge(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    crt: str,
+    expected: set[str],
+) -> None:
+    """On the All in One +, getOWH is the soft water hardness of the HWE cartridge (0-12)."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "model": _conelclearpro_connect_TEST_ALLINONEPLUS_MODEL,
+                "status": {
+                    "getCRT": crt,
+                    "getOWH": "5",
+                    "getLOT": "7",
+                    "getOHW": "3",
+                    "getWHU": "0",
+                },
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    cartridge_selects = [
+        e
+        for e in entities
+        if getattr(e, "_sensor_key", None) in ("getOWH", "getLOT", "getOHW")
+    ]
+    assert {e._sensor_key for e in cartridge_selects} == expected
+    for select in cartridge_selects:
+        assert isinstance(select, SyrConnectHardnessSelect)
+        assert select.options[0] == "0 °dH"
+        assert select.options[-1] == "12 °dH"
+        assert select.current_option == "5 °dH"
+
+
+@pytest.mark.parametrize(
+    ("model_name", "first_options"),
+    [
+        pytest.param(
+            "allinoneplus",
+            ["5 min", "10 min", "15 min", "20 min", "30 min", "40 min", "50 min"],
+            id="allinoneplus",
+        ),
+        pytest.param(
+            "conelclearprofill",
+            ["1 min", "2 min", "3 min", "4 min", "5 min", "10 min", "15 min"],
+            id="muco-filling",
+        ),
+    ],
+)
+async def test_rmt_select_options_follow_profile(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    model_name: str,
+    first_options: list[str],
+) -> None:
+    """The All in One + offers other maximum filling durations (getRMT) than MuCo."""
+    model = next(model for model in MODEL_SIGNATURES if model.name == model_name)
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "model": model,
+                "status": {"getRMT": "30"},
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    rmt = next(e for e in entities if getattr(e, "_sensor_key", None) == "getRMT")
+    assert rmt.options[:7] == first_options
+    assert rmt.options[-1] == "720 min"
+    assert rmt.current_option == "30 min"
+
+
+async def test_allinoneplus_cwl_select(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
+    """The remaining capacity warning threshold (getCWL) offers 1-10 %."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "model": _conelclearpro_connect_TEST_ALLINONEPLUS_MODEL,
+                "status": {"getCWL": "10"},
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    cwl = next(e for e in entities if getattr(e, "_sensor_key", None) == "getCWL")
+    assert cwl.options == [f"{value} %" for value in range(1, 11)]
+    assert cwl.current_option == "10 %"
+
+
+@pytest.mark.parametrize(
+    ("whu", "iwh", "iwh_options", "owh_options"),
+    [
+        pytest.param(
+            "0",
+            "20",
+            [f"{value} °dH" for value in range(1, 51)],
+            [f"{value} °dH" for value in range(13)],
+            id="dh",
+        ),
+        pytest.param(
+            "1",
+            "8",
+            [f"{value} °e" for value in range(1, 66)],
+            [f"{value} °e" for value in range(9)],
+            id="e-limited-by-raw-water",
+        ),
+        pytest.param(
+            "2",
+            "40",
+            [f"{value} °fH" for value in range(1, 91)],
+            [f"{value} °fH" for value in range(23)],
+            id="fh",
+        ),
+        pytest.param(
+            "3",
+            "350",
+            [f"{value} ppm" for value in range(10, 901, 10)],
+            [f"{value} ppm" for value in range(0, 221, 10)],
+            id="ppm",
+        ),
+        pytest.param("7", "20", [], [], id="unknown-unit"),
+    ],
+)
+async def test_allinoneplus_hardness_selects_follow_unit(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    whu: str,
+    iwh: str,
+    iwh_options: list[str],
+    owh_options: list[str],
+) -> None:
+    """The hardness ranges of the All in One + follow the unit; getOWH is at most getIWH."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "model": _conelclearpro_connect_TEST_ALLINONEPLUS_MODEL,
+                "status": {
+                    "getCRT": "0",
+                    "getIWH": iwh,
+                    "getOWH": "5",
+                    "getWHU": whu,
+                },
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    by_key = {getattr(e, "_sensor_key", None): e for e in entities}
+    assert isinstance(by_key["getIWH"], SyrConnectRangedHardnessSelect)
+    assert isinstance(by_key["getOWH"], SyrConnectRangedHardnessSelect)
+    assert by_key["getIWH"].options == iwh_options
+    assert by_key["getOWH"].options == owh_options
+
+
+@pytest.mark.parametrize(
+    ("model_name", "custom"),
+    [
+        pytest.param("allinoneplus", True, id="allinoneplus"),
+        pytest.param("conelclearprofill", False, id="muco-filling"),
+    ],
+)
+async def test_crs_select_custom_size_follows_profile(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    model_name: str,
+    custom: bool,
+) -> None:
+    """Only a model with a custom cartridge size (getFCS) offers "custom" for getCRS."""
+    model = next(model for model in MODEL_SIGNATURES if model.name == model_name)
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "model": model,
+                "status": {"getCRS": "0", "getFCS": "20"},
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    by_key = {getattr(e, "_sensor_key", None): e for e in entities}
+    assert ("custom" in by_key["getCRS"].options) is custom
+    assert (by_key["getCRS"].current_option == "custom") is custom
+    assert ("getFCS" in by_key) is custom
+    if custom:
+        assert by_key["getFCS"].options == [f"{value} L" for value in range(1, 101)]
+        assert by_key["getFCS"].current_option == "20 L"
+
+
+async def test_allinoneplus_initial_filling_selects(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
+    """The initial filling limits (getFVT, getFMT) offer the steps of the SYR app."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "model": _conelclearpro_connect_TEST_ALLINONEPLUS_MODEL,
+                "status": {"getFMT": "60", "getFVT": "100"},
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    by_key = {getattr(e, "_sensor_key", None): e for e in entities}
+    fvt = by_key["getFVT"]
+    fmt = by_key["getFMT"]
+    assert fvt.options[:3] == ["0 L", "10 L", "20 L"]
+    assert fvt.options[-1] == "9900 L"
+    assert fvt.current_option == "100 L"
+    assert fmt.options[:8] == [
+        "5 min",
+        "10 min",
+        "15 min",
+        "20 min",
+        "30 min",
+        "40 min",
+        "50 min",
+        "60 min",
+    ]
+    assert fmt.options[-1] == "1500 min"
+    assert fmt.current_option == "60 min"
+
+
+@pytest.mark.parametrize(
+    ("whu", "iwh", "iwh_options", "ohw_options", "iwh_current", "ohw_current"),
+    [
+        pytest.param(
+            "0",
+            "18",
+            [f"{value} °dH" for value in range(1, 51)],
+            [f"{value} °dH" for value in range(13)],
+            "18 °dH",
+            "5 °dH",
+            id="dh",
+        ),
+        pytest.param(
+            "1",
+            "18",
+            [f"{value} °e" for value in range(1, 66)],
+            [f"{value} °e" for value in range(17)],
+            "23 °e",
+            "6 °e",
+            id="e",
+        ),
+        pytest.param(
+            "1",
+            "5",
+            [f"{value} °e" for value in range(1, 66)],
+            [f"{value} °e" for value in range(7)],
+            "6 °e",
+            "6 °e",
+            id="e-limited-by-raw-water",
+        ),
+        pytest.param(
+            "2",
+            "18",
+            [f"{value} °fH" for value in range(1, 91)],
+            [f"{value} °fH" for value in range(23)],
+            "32 °fH",
+            "9 °fH",
+            id="fh",
+        ),
+        pytest.param(
+            "3",
+            "18",
+            [f"{value} ppm" for value in range(10, 901, 10)],
+            [f"{value} ppm" for value in range(0, 221, 10)],
+            "320 ppm",
+            "80 ppm",
+            id="ppm-step-below",
+        ),
+        pytest.param("7", "18", [], [], "18", "5", id="unknown-unit"),
+    ],
+)
+async def test_muco_filling_hardness_selects_convert_from_dh(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    whu: str,
+    iwh: str,
+    iwh_options: list[str],
+    ohw_options: list[str],
+    iwh_current: str,
+    ohw_current: str,
+) -> None:
+    """The MuCo filling keeps the water hardness in °dH and shows it in the unit."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "model": _conelclearpro_connect_TEST_MUCO_FILLING_MODEL,
+                "status": {
+                    "getCRT": "0",
+                    "getIWH": iwh,
+                    "getOHW": "5",
+                    "getWHU": whu,
+                },
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    by_key = {getattr(e, "_sensor_key", None): e for e in entities}
+    assert isinstance(by_key["getIWH"], SyrConnectRangedHardnessSelect)
+    assert isinstance(by_key["getOHW"], SyrConnectRangedHardnessSelect)
+    assert by_key["getIWH"].options == iwh_options
+    assert by_key["getOHW"].options == ohw_options
+    assert by_key["getIWH"].current_option == iwh_current
+    assert by_key["getOHW"].current_option == ohw_current
+
+
+@pytest.mark.parametrize(
+    ("whu", "key", "option", "set_key", "expected"),
+    [
+        pytest.param("0", "getIWH", "18 °dH", "setIWH", 18, id="dh"),
+        pytest.param("1", "getIWH", "23 °e", "setIWH", 18, id="e"),
+        pytest.param("2", "getOHW", "9 °fH", "setOHW", 5, id="fh"),
+        pytest.param("3", "getIWH", "320 ppm", "setIWH", 18, id="ppm"),
+        pytest.param("3", "getOHW", "80 ppm", "setOHW", 4, id="ppm-step-below"),
+    ],
+)
+async def test_muco_filling_hardness_select_writes_dh(
+    hass: HomeAssistant, whu: str, key: str, option: str, set_key: str, expected: int
+) -> None:
+    """An option in the unit of the display is written to the MuCo filling in °dH."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "model": _conelclearpro_connect_TEST_MUCO_FILLING_MODEL,
+                "status": {"getIWH": "18", "getOHW": "5", "getWHU": whu},
+            }
+        ]
+    }
+    coordinator = _build_coordinator(hass, data)
+    coordinator.async_set_device_value = AsyncMock()
+
+    select = SyrConnectRangedHardnessSelect(coordinator, "device1", "Device 1", key)
+    await select.async_select_option(option)
+
+    coordinator.async_set_device_value.assert_called_once_with(
+        "device1", set_key, expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("model_name", "status", "option", "calls"),
+    [
+        pytest.param(
+            "conelclearprofill",
+            {"getIWH": "18", "getOHW": "8", "getWHU": "1"},
+            "6 °e",
+            [("setIWH", 5), ("setOHW", 5)],
+            id="muco-filling-lowers-soft-water",
+        ),
+        pytest.param(
+            "conelclearprofill",
+            {"getIWH": "18", "getOHW": "5", "getWHU": "0"},
+            "5 °dH",
+            [("setIWH", 5)],
+            id="muco-filling-soft-water-fits",
+        ),
+        pytest.param(
+            "conelclearprofill",
+            {"getIWH": "18", "getOHW": "", "getWHU": "0"},
+            "5 °dH",
+            [("setIWH", 5)],
+            id="muco-filling-no-soft-water",
+        ),
+        pytest.param(
+            "allinoneplus",
+            {"getIWH": "200", "getOWH": "150", "getWHU": "3"},
+            "100 ppm",
+            [("setIWH", 100), ("setOWH", 100)],
+            id="allinoneplus-lowers-soft-water",
+        ),
+    ],
+)
+async def test_ranged_hardness_select_lowers_soft_water_hardness(
+    hass: HomeAssistant,
+    model_name: str,
+    status: dict[str, str],
+    option: str,
+    calls: list[tuple[str, int]],
+) -> None:
+    """A raw water hardness below the soft water hardness lowers that one too."""
+    model = next(model for model in MODEL_SIGNATURES if model.name == model_name)
+    data = {
+        "devices": [
+            {"id": "device1", "name": "Device 1", "model": model, "status": status}
+        ]
+    }
+    coordinator = _build_coordinator(hass, data)
+    coordinator.async_set_device_value = AsyncMock()
+
+    select = SyrConnectRangedHardnessSelect(
+        coordinator, "device1", "Device 1", "getIWH"
+    )
+    await select.async_select_option(option)
+
+    assert coordinator.async_set_device_value.call_args_list == [
+        call("device1", set_key, value) for set_key, value in calls
+    ]
+
+
+async def test_ranged_hardness_select_lowering_soft_water_hardness_fails(
+    hass: HomeAssistant,
+) -> None:
+    """A failed write of the lowered soft water hardness is reported to the user."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "model": _conelclearpro_connect_TEST_MUCO_FILLING_MODEL,
+                "status": {"getIWH": "18", "getOHW": "8", "getWHU": "0"},
+            }
+        ]
+    }
+    coordinator = _build_coordinator(hass, data)
+    coordinator.async_set_device_value = AsyncMock(
+        side_effect=[None, SyrConnectError("failed")]
+    )
+
+    select = SyrConnectRangedHardnessSelect(
+        coordinator, "device1", "Device 1", "getIWH"
+    )
+    with pytest.raises(HomeAssistantError) as err:
+        await select.async_select_option("5 °dH")
+
+    assert err.value.translation_key == "set_value_failed"

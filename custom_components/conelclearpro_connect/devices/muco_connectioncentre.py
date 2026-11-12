@@ -1,10 +1,11 @@
-"""Entity allowlist override for the muco_connectioncentre model (SYR AC 3200
-Connect, dkv=506, getDFM=2, "Connection centre"/"Anschlusscenter" role).
+"""Entity allowlist override for the muco_connectioncentre model.
+
+SYR AC 3200 Connect (dkv=506, getDFM=2), "Connection centre"/"Anschlusscenter" role.
 
 Model type: Connection Centre / "Anschlusscenter"
 
 This is a POSITIVE list: only keys confirmed to be meaningful for this model
-are listed, unlike the shared global allowlists in const.py which have to
+are listed, unlike the shared global allowlists of the platforms which have to
 cover every supported model at once.
 
 No real-device or fixture capture exists for this variant yet - the keys
@@ -25,45 +26,86 @@ Deliberately NOT included, pending confirmation on a real device:
   "Anschlusscenter"/"Connection centre"), not a leak-protection variant.
 
 If real-device testing shows any of the above (or other) keys are actually
-used, move them into SENSOR_KNOWN_KEYS below.
+used, move them into SENSOR_SUPPORTED_KEYS below.
 """
 
-SENSOR_KNOWN_KEYS = {
+from . import WHU_UNITS_MUCO, SyrConnectDeviceProfile
+
+SENSOR_SUPPORTED_KEYS = {
     # --- Connectivity ---
     "dst",
     # --- Flow ---
     "getFLO",
     # --- Alarm / Notification / Warning ---
-    "getALA", "getALM", "getALN", "getALW", "getNOT", "getWRN",
+    "getALA",
+    "getALM",
+    "getALN",
+    "getALW",
+    "getNOT",
+    "getWRN",
     # --- Pressure ---
     "getBAR2",
     # --- Voltage / Battery ---
+    "getBAP",
     "getBAT",
     # --- Water Quality ---
     "getCND",
     # --- Device Status ---
     "getDFM",
     # --- Device Info & Diagnostics ---
-    "getEGW", "getEIP", "getLNG", "getMAC1", "getMAC2", "getSRN", "getVER",
+    "getEGW",
+    "getEIP",
+    "getLNG",
+    "getMAC1",
+    "getMAC2",
+    "getSRN",
+    "getTMZ",
+    "getVER",
     # --- Wi-Fi ---
-    "getAPT", "getWFC", "getWFR", "getWFS", "getWGW", "getWIP",
+    "getAPT",
+    "getWFC",
+    "getWFR",
+    "getWFS",
+    "getWGW",
+    "getWIP",
     # --- Lock / Connection Centre ---
-    "getCFT", "getCFV", "getLFT", "getLFV", "getNRT", "getTRT", "getTRV",
+    "getCFT",
+    "getCFV",
+    "getLFT",
+    "getLFV",
+    "getNRT",
+    "getTRT",
+    "getTRV",
 }
 
-SELECT_KNOWN_KEYS: set[str] = set()
+SELECT_SUPPORTED_KEYS: set[str] = set()
 
-SWITCH_KNOWN_KEYS = {
+SWITCH_SUPPORTED_KEYS = {
     "getBUZ",
 }
 
-BINARY_SENSOR_KNOWN_KEYS = {
+BINARY_SENSOR_SUPPORTED_KEYS = {
     "getBUZ",
+    "getIDS",
+    "getSFV",
 }
 
-BUTTON_KNOWN_KEYS = {
-    "setALA", "setNOT", "setWRN",
+BUTTON_SUPPORTED_KEYS = {
+    "setALA",
+    "setNOT",
+    "setWRN",
 }
 
 # No shutoff valve confirmed for this "Connection centre" role.
-VALVE_KNOWN_KEYS: set[str] = set()
+VALVE_SUPPORTED_KEYS: set[str] = set()
+
+
+PROFILE = SyrConnectDeviceProfile(
+    binary_sensor=BINARY_SENSOR_SUPPORTED_KEYS,
+    button=BUTTON_SUPPORTED_KEYS,
+    select=SELECT_SUPPORTED_KEYS,
+    sensor=SENSOR_SUPPORTED_KEYS,
+    switch=SWITCH_SUPPORTED_KEYS,
+    valve=VALVE_SUPPORTED_KEYS,
+    whu_units=WHU_UNITS_MUCO,
+)

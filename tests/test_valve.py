@@ -1,51 +1,57 @@
 """Tests for valve platform."""
-# mypy: disable-error-code="method-assign, misc"
-from __future__ import annotations
 
+# The unit tests in this module check private helpers and attributes directly.
+# ruff: noqa: SLF001
+
+# mypy: disable-error-code="method-assign, misc"
+from collections.abc import Callable
+import contextlib
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.conelclearpro_connect.api_json import SyrConnectJsonAPI
+from custom_components.conelclearpro_connect.const import CONF_SERVICE
+from custom_components.conelclearpro_connect.coordinator import SyrConnectDataUpdateCoordinator
+from custom_components.conelclearpro_connect.helpers import build_set_ab_command
+from custom_components.conelclearpro_connect.response_parser import ResponseParser
+from custom_components.conelclearpro_connect.valve import SyrConnectValve, async_setup_entry
+from homeassistant.components.valve import ValveEntityFeature
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-from custom_components.syr_connect.coordinator import SyrConnectDataUpdateCoordinator
-from custom_components.syr_connect.response_parser import ResponseParser
-from custom_components.syr_connect.valve import SyrConnectValve, async_setup_entry
 
 
-def _consume_coro_return_task(coro):
+def _consume_coro_return_task(coro: Any) -> Any:
     """Safely consume a coroutine passed to `async_create_task` in tests.
 
     This closes the coroutine (if possible) to avoid "was never awaited"
     warnings and returns a dummy task-like object with a `cancel` and
     `done` method so callers that inspect the returned value behave.
     """
-    try:
-        close = getattr(coro, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                pass
-    except Exception:
-        pass
+    close = getattr(coro, "close", None)
+    if callable(close):
+        with contextlib.suppress(Exception):
+            close()
 
     class _DummyTask:
-        def cancel(self):
+        def cancel(self) -> None:
             return None
 
-        def done(self):
+        def done(self) -> Any:
             return True
 
     return _DummyTask()
 
 
-def _build_coordinator(hass: HomeAssistant, data: dict) -> SyrConnectDataUpdateCoordinator:
+def _build_coordinator(
+    hass: HomeAssistant, data: dict
+) -> SyrConnectDataUpdateCoordinator:
     config_data = {
+        CONF_SERVICE: "de.consoft.syr.connect",
         CONF_USERNAME: "test@example.com",
         CONF_PASSWORD: "password",
     }
@@ -55,12 +61,13 @@ def _build_coordinator(hass: HomeAssistant, data: dict) -> SyrConnectDataUpdateC
         config_data,
         60,
     )
-    coordinator.async_set_updated_data(data)
+    coordinator.async_set_updated_data(cast(Any, data))
     coordinator.last_update_success = True
     return coordinator
 
 
 async def test_open_close_calls_set(hass: HomeAssistant) -> None:
+    """Test open close calls set."""
     data = {
         "devices": [
             {
@@ -84,6 +91,7 @@ async def test_open_close_calls_set(hass: HomeAssistant) -> None:
 
 
 async def test_open_close_error_raises(hass: HomeAssistant) -> None:
+    """Test open close error raises."""
     data = {
         "devices": [
             {
@@ -107,7 +115,14 @@ async def test_open_close_error_raises(hass: HomeAssistant) -> None:
         raise AssertionError("Expected HomeAssistantError on failure")
 
 
-async def test_async_setup_entry_creates_valve(hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities) -> None:
+async def test_async_setup_entry_creates_valve(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+) -> None:
+    """Test async setup entry creates valve."""
     data = {
         "devices": [
             {
@@ -118,7 +133,7 @@ async def test_async_setup_entry_creates_valve(hass: HomeAssistant, create_mock_
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
@@ -127,13 +142,28 @@ async def test_async_setup_entry_creates_valve(hass: HomeAssistant, create_mock_
 
 
 async def test_async_setup_entry_creates_valve_for_triolock_real_fixture(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
 ) -> None:
     """SYR TRIO Lock Connect (muco_triolock) real fixture creates a valve entity for getAB."""
-    xml = (Path(__file__).parent / "fixtures/xml/SyrTrioLock_GetDeviceCollectionStatus.xml").read_text(encoding="utf-8")
+    xml = (
+        Path(__file__).parent / "fixtures/xml/SyrTrioLock_GetDeviceCollectionStatus.xml"
+    ).read_text(encoding="utf-8")
     status = ResponseParser().parse_device_status_response(xml)
-    data = {"devices": [{"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}]}
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
@@ -142,6 +172,7 @@ async def test_async_setup_entry_creates_valve_for_triolock_real_fixture(
 
 
 async def test_available(hass: HomeAssistant) -> None:
+    """Test available."""
     data = {
         "devices": [
             {
@@ -160,12 +191,13 @@ async def test_available(hass: HomeAssistant) -> None:
 
 
 def _build_entry(coordinator: SyrConnectDataUpdateCoordinator) -> MockConfigEntry:
-    entry = MockConfigEntry(domain="syr_connect", data={})
+    entry = MockConfigEntry(domain="conelclearpro_connect", data={})
     entry.runtime_data = coordinator
     return entry
 
 
 async def test_async_setup_entry_creates_valves(hass: HomeAssistant) -> None:
+    """Test async setup entry creates valves."""
     data = {
         "devices": [
             {
@@ -196,6 +228,7 @@ async def test_async_setup_entry_creates_valves(hass: HomeAssistant) -> None:
 
 
 async def test_entity_properties_and_state_transitions(hass: HomeAssistant) -> None:
+    """Test entity properties and state transitions."""
     data = {
         "devices": [
             {
@@ -223,13 +256,16 @@ async def test_entity_properties_and_state_transitions(hass: HomeAssistant) -> N
 
     # Update status to opening (21)
     coordinator.async_set_updated_data(
-        {"devices": [{"id": "dev", "name": "Dev", "status": {"getVLV": "21"}}]}
+        cast(
+            Any, {"devices": [{"id": "dev", "name": "Dev", "status": {"getVLV": "21"}}]}
+        )
     )
     assert valve.is_opening is True
     assert valve.state == "opening"
 
 
 async def test_is_closed_reads_only_getab(hass: HomeAssistant) -> None:
+    """Test is closed reads only getAB."""
     data = {"devices": [{"id": "x", "name": "X", "status": {"getAB": "2"}}]}
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "x", "X")
@@ -238,11 +274,14 @@ async def test_is_closed_reads_only_getab(hass: HomeAssistant) -> None:
     assert valve.is_closed is True
 
     # Invalid getAB -> unknown
-    coordinator.async_set_updated_data({"devices": [{"id": "x", "name": "X", "status": {"getAB": "abc"}}]})
+    coordinator.async_set_updated_data(
+        cast(Any, {"devices": [{"id": "x", "name": "X", "status": {"getAB": "abc"}}]})
+    )
     assert valve.is_closed is None
 
 
 async def test_available_checks(hass: HomeAssistant) -> None:
+    """Test available checks."""
     data = {"devices": [{"id": "a", "name": "A", "status": {}, "available": True}]}
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "a", "A")
@@ -253,11 +292,14 @@ async def test_available_checks(hass: HomeAssistant) -> None:
 
     # If device present but marked unavailable
     coordinator.last_update_success = True
-    coordinator.async_set_updated_data({"devices": [{"id": "a", "name": "A", "status": {}, "available": False}]})
+    coordinator.async_set_updated_data(
+        {"devices": [{"id": "a", "name": "A", "status": {}, "available": False}]}
+    )
     assert valve.available is False
 
 
 async def test_async_open_close_success_and_failure(hass: HomeAssistant) -> None:
+    """Test async open close success and failure."""
     data = {"devices": [{"id": "op", "name": "Op", "status": {"getAB": "1"}}]}
     coordinator = _build_coordinator(hass, data)
     # Replace async_set_device_value with a mock
@@ -276,7 +318,7 @@ async def test_async_open_close_success_and_failure(hass: HomeAssistant) -> None
     coordinator.async_set_device_value.assert_awaited_with("op", "setAB", 2)
 
     # Simulate failure
-    async def _fail(*args, **kwargs):
+    async def _fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError("boom")
 
     coordinator.async_set_device_value = AsyncMock(side_effect=_fail)
@@ -288,22 +330,8 @@ async def test_async_open_close_success_and_failure(hass: HomeAssistant) -> None
         pass
 
 
-async def test_sync_service_wrappers_schedule_tasks(hass: HomeAssistant) -> None:
-    data = {"devices": [{"id": "s1", "name": "S1", "status": {}}]}
-    coordinator = _build_coordinator(hass, data)
-    valve = SyrConnectValve(coordinator, "s1", "S1")
-
-    # Provide a hass with async_create_task spy that consumes the coro
-    fake_hass = MagicMock()
-    fake_hass.async_create_task = Mock(side_effect=_consume_coro_return_task)
-    valve.hass = fake_hass
-    valve.open_valve()
-    fake_hass.async_create_task.assert_called()
-    valve.close_valve()
-    assert fake_hass.async_create_task.call_count >= 2
-
-
 async def test_state_unknown_when_no_status(hass: HomeAssistant) -> None:
+    """Test state unknown when no status."""
     data: dict = {"devices": []}
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "missing", "Missing")
@@ -312,6 +340,7 @@ async def test_state_unknown_when_no_status(hass: HomeAssistant) -> None:
 
 
 async def test_is_closing_state(hass: HomeAssistant) -> None:
+    """Test is closing state."""
     data = {"devices": [{"id": "c1", "name": "C1", "status": {"getVLV": "11"}}]}
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "c1", "C1")
@@ -324,6 +353,7 @@ async def test_is_closing_state(hass: HomeAssistant) -> None:
 
 
 async def test_extra_state_attributes_none_when_no_status(hass: HomeAssistant) -> None:
+    """Test extra state attributes none when no status."""
     data: dict = {"devices": []}
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "no_status", "NoStatus")
@@ -331,16 +361,18 @@ async def test_extra_state_attributes_none_when_no_status(hass: HomeAssistant) -
 
 
 async def test_is_closed_none_when_device_missing(hass: HomeAssistant) -> None:
+    """Test is closed none when device missing."""
     # Coordinator has devices but not our device id
     data = {"devices": [{"id": "other", "name": "Other", "status": {"getVLV": "20"}}]}
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "missing_device", "Missing")
-    assert valve._get_device() is None
-    assert valve._get_status() is None
+    assert valve._device is None
+    assert valve._status == {}
     assert valve.is_closed is None
 
 
 async def test_async_open_handles_write_state_exception(hass: HomeAssistant) -> None:
+    """Test async open handles write state exception."""
     data = {"devices": [{"id": "w1", "name": "W1", "status": {"getAB": "1"}}]}
     coordinator = _build_coordinator(hass, data)
     coordinator.async_set_device_value = AsyncMock()
@@ -352,10 +384,11 @@ async def test_async_open_handles_write_state_exception(hass: HomeAssistant) -> 
 
 
 async def test_async_setup_entry_with_no_coordinator_data(hass: HomeAssistant) -> None:
+    """Test async setup entry with no coordinator data."""
     # If entry.runtime_data.data is falsy, async_setup_entry should not call add_entities
     coordinator = _build_coordinator(hass, {"devices": []})
     # Simulate missing data
-    coordinator.data = None  # type: ignore[assignment]
+    coordinator.data = None
     entry = _build_entry(coordinator)
     entry.add_to_hass(hass)
 
@@ -366,8 +399,15 @@ async def test_async_setup_entry_with_no_coordinator_data(hass: HomeAssistant) -
     assert not add_entities.called
 
 
-async def test_invalid_getvlv_does_not_raise_and_falls_back(hass: HomeAssistant) -> None:
-    data = {"devices": [{"id": "v1", "name": "V1", "status": {"getVLV": "abc", "getAB": "1"}}]}
+async def test_invalid_getvlv_does_not_raise_and_falls_back(
+    hass: HomeAssistant,
+) -> None:
+    """Test invalid getVLV does not raise and falls back."""
+    data = {
+        "devices": [
+            {"id": "v1", "name": "V1", "status": {"getVLV": "abc", "getAB": "1"}}
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "v1", "V1")
 
@@ -381,24 +421,26 @@ async def test_invalid_getvlv_does_not_raise_and_falls_back(hass: HomeAssistant)
 
 
 async def test_supported_features_and_device_class_and_reports_position() -> None:
+    """Test supported features and device class and reports position."""
     # Directly instantiate without hass for attribute checks
     coordinator = MagicMock()
     coordinator.data = {"devices": []}
     valve = SyrConnectValve(coordinator, "id", "Name")
 
-    assert valve._attr_device_class is not None
-    assert valve._attr_reports_position is False
+    assert valve.device_class is not None
+    assert valve.reports_position is False
     # Expect supported features include OPEN and CLOSE bits
-    try:
-        from homeassistant.components.valve import ValveEntityFeature
-    except Exception:
-        pytest.skip("ValveEntityFeature not available in this test environment")
 
-    assert int(valve._attr_supported_features) & int(ValveEntityFeature.OPEN) == int(ValveEntityFeature.OPEN)
-    assert int(valve._attr_supported_features) & int(ValveEntityFeature.CLOSE) == int(ValveEntityFeature.CLOSE)
+    assert int(valve.supported_features) & int(ValveEntityFeature.OPEN) == int(
+        ValveEntityFeature.OPEN
+    )
+    assert int(valve.supported_features) & int(ValveEntityFeature.CLOSE) == int(
+        ValveEntityFeature.CLOSE
+    )
 
 
 async def test_async_service_entrypoints_call_underlying(hass: HomeAssistant) -> None:
+    """Test async service entrypoints call underlying."""
     data = {"devices": [{"id": "as1", "name": "AS1", "status": {}}]}
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "as1", "AS1")
@@ -414,18 +456,13 @@ async def test_async_service_entrypoints_call_underlying(hass: HomeAssistant) ->
     valve.async_close.assert_awaited()
 
 
-async def test_sync_wrappers_without_hass_do_nothing(hass: HomeAssistant) -> None:
-    coordinator = _build_coordinator(hass, {"devices": []})
-    valve = SyrConnectValve(coordinator, "no_hass", "NoHass")
-    # Ensure hass is None
-    valve.hass = None  # type: ignore[assignment]
-    # Should not raise
-    valve.open_valve()
-    valve.close_valve()
-
-
 async def test_state_open(hass: HomeAssistant) -> None:
-    data = {"devices": [{"id": "o1", "name": "O1", "status": {"getVLV": "20", "getAB": "1"}}]}
+    """Test state open."""
+    data = {
+        "devices": [
+            {"id": "o1", "name": "O1", "status": {"getVLV": "20", "getAB": "1"}}
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "o1", "O1")
     # getAB=1 -> open
@@ -454,6 +491,42 @@ async def test_async_setup_entry_skips_invalid_values(hass: HomeAssistant) -> No
 
     # Should not create any valve entities
     add_entities.assert_not_called()
+
+
+async def test_async_setup_entry_skips_infinite_getab(hass: HomeAssistant) -> None:
+    """An infinite getAB (OverflowError in int()) creates no valve instead of failing."""
+    data = {
+        "devices": [
+            {
+                "id": "inf",
+                "name": "Inf",
+                "project_id": "p",
+                "status": {"getAB": "inf"},
+            }
+        ]
+    }
+    coordinator = _build_coordinator(hass, data)
+    entry = _build_entry(coordinator)
+    entry.add_to_hass(hass)
+
+    add_entities = Mock()
+    await async_setup_entry(hass, entry, add_entities)
+
+    add_entities.assert_not_called()
+
+
+async def test_infinite_getvlv_returns_none(hass: HomeAssistant) -> None:
+    """An infinite getVLV (OverflowError in int()) gives no opening/closing state."""
+    data = {
+        "devices": [
+            {"id": "v1", "name": "V1", "status": {"getVLV": "inf", "getAB": "1"}}
+        ]
+    }
+    coordinator = _build_coordinator(hass, data)
+    valve = SyrConnectValve(coordinator, "v1", "V1")
+
+    assert valve.is_opening is None
+    assert valve.is_closing is None
 
 
 async def test_async_open_close_with_boolean_string_status(hass: HomeAssistant) -> None:
@@ -616,7 +689,11 @@ async def test_is_closed_with_getvlv_21_opening(hass: HomeAssistant) -> None:
 
 async def test_shadow_ab_false_overrides_vlv(hass: HomeAssistant) -> None:
     """Test that getAB=1 (open) correctly reflects open state regardless of getVLV."""
-    data = {"devices": [{"id": "cf", "name": "CF", "status": {"getVLV": "10", "getAB": "1"}}]}
+    data = {
+        "devices": [
+            {"id": "cf", "name": "CF", "status": {"getVLV": "10", "getAB": "1"}}
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "cf", "CF")
 
@@ -625,14 +702,22 @@ async def test_shadow_ab_false_overrides_vlv(hass: HomeAssistant) -> None:
 
     # Without getVLV, getAB=1 still means open
     coordinator.async_set_updated_data(
-        {"devices": [{"id": "cf", "name": "CF", "status": {"getAB": "1"}}]}
+        cast(Any, {"devices": [{"id": "cf", "name": "CF", "status": {"getAB": "1"}}]})
     )
     assert valve.is_closed is False
 
 
 async def test_is_closed_getvlv_valueerror(hass: HomeAssistant) -> None:
     """Test is_closed handles ValueError in getVLV parsing."""
-    data = {"devices": [{"id": "ve", "name": "VE", "status": {"getVLV": "not_a_number", "getAB": "2"}}]}
+    data = {
+        "devices": [
+            {
+                "id": "ve",
+                "name": "VE",
+                "status": {"getVLV": "not_a_number", "getAB": "2"},
+            }
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "ve", "VE")
 
@@ -653,7 +738,9 @@ async def test_is_opening_valueerror(hass: HomeAssistant) -> None:
 
 async def test_is_closing_valueerror(hass: HomeAssistant) -> None:
     """Test is_closing handles ValueError in getVLV parsing."""
-    data = {"devices": [{"id": "cve", "name": "CVE", "status": {"getVLV": "bad_value"}}]}
+    data = {
+        "devices": [{"id": "cve", "name": "CVE", "status": {"getVLV": "bad_value"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "cve", "CVE")
 
@@ -669,7 +756,7 @@ async def test_async_close_handles_write_state_exception(hass: HomeAssistant) ->
     valve = SyrConnectValve(coordinator, "w2", "W2")
 
     # Make async_write_ha_state raise; async_close should swallow it
-    def _fail():
+    def _fail() -> None:
         raise RuntimeError("ui fail")
 
     valve.async_write_ha_state = _fail
@@ -685,7 +772,7 @@ async def test_async_close_raises_on_failure(hass: HomeAssistant) -> None:
     coordinator = _build_coordinator(hass, data)
 
     # Make async_set_device_value fail
-    async def _fail(*args, **kwargs):
+    async def _fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError("command failed")
 
     coordinator.async_set_device_value = AsyncMock(side_effect=_fail)
@@ -705,7 +792,7 @@ async def test_async_open_raises_on_failure(hass: HomeAssistant) -> None:
     coordinator = _build_coordinator(hass, data)
 
     # Make async_set_device_value fail
-    async def _fail(*args, **kwargs):
+    async def _fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError("command failed")
 
     coordinator.async_set_device_value = AsyncMock(side_effect=_fail)
@@ -719,20 +806,22 @@ async def test_async_open_raises_on_failure(hass: HomeAssistant) -> None:
         pass  # expected
 
 
-async def test_async_open_second_write_state_exception_on_failure(hass: HomeAssistant) -> None:
+async def test_async_open_second_write_state_exception_on_failure(
+    hass: HomeAssistant,
+) -> None:
     """Test async_open handles exception in second async_write_ha_state (on failure path)."""
     data = {"devices": [{"id": "ws1", "name": "WS1", "status": {}}]}
     coordinator = _build_coordinator(hass, data)
 
     # Make async_set_device_value fail
-    async def _fail(*args, **kwargs):
+    async def _fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError("command failed")
 
     coordinator.async_set_device_value = AsyncMock(side_effect=_fail)
     valve = SyrConnectValve(coordinator, "ws1", "WS1")
 
     # Make async_write_ha_state always raise
-    def _write_fail():
+    def _write_fail() -> None:
         raise RuntimeError("write state failed")
 
     valve.async_write_ha_state = _write_fail
@@ -744,20 +833,22 @@ async def test_async_open_second_write_state_exception_on_failure(hass: HomeAssi
         pass  # expected
 
 
-async def test_async_close_second_write_state_exception_on_failure(hass: HomeAssistant) -> None:
+async def test_async_close_second_write_state_exception_on_failure(
+    hass: HomeAssistant,
+) -> None:
     """Test async_close handles exception in second async_write_ha_state (on failure path)."""
     data = {"devices": [{"id": "ws2", "name": "WS2", "status": {}}]}
     coordinator = _build_coordinator(hass, data)
 
     # Make async_set_device_value fail
-    async def _fail(*args, **kwargs):
+    async def _fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError("command failed")
 
     coordinator.async_set_device_value = AsyncMock(side_effect=_fail)
     valve = SyrConnectValve(coordinator, "ws2", "WS2")
 
     # Make async_write_ha_state always raise
-    def _write_fail():
+    def _write_fail() -> None:
         raise RuntimeError("write state failed")
 
     valve.async_write_ha_state = _write_fail
@@ -771,7 +862,9 @@ async def test_async_close_second_write_state_exception_on_failure(hass: HomeAss
 
 async def test_is_closed_getvlv_empty_string(hass: HomeAssistant) -> None:
     """Test is_closed handles empty string getVLV."""
-    data = {"devices": [{"id": "es", "name": "ES", "status": {"getVLV": "", "getAB": "1"}}]}
+    data = {
+        "devices": [{"id": "es", "name": "ES", "status": {"getVLV": "", "getAB": "1"}}]
+    }
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "es", "ES")
 
@@ -802,7 +895,11 @@ async def test_is_closing_empty_string(hass: HomeAssistant) -> None:
 
 async def test_is_closed_getvlv_typeerror(hass: HomeAssistant) -> None:
     """Test is_closed handles TypeError in getVLV parsing."""
-    data = {"devices": [{"id": "te", "name": "TE", "status": {"getVLV": None, "getAB": "2"}}]}
+    data = {
+        "devices": [
+            {"id": "te", "name": "TE", "status": {"getVLV": None, "getAB": "2"}}
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
     valve = SyrConnectValve(coordinator, "te", "TE")
 
@@ -852,7 +949,9 @@ async def test_async_setup_entry_getvlv_all_valid_codes(hass: HomeAssistant) -> 
     add_entities.assert_not_called()
 
 
-async def test_async_setup_entry_getab_valid_values_1_and_2(hass: HomeAssistant) -> None:
+async def test_async_setup_entry_getab_valid_values_1_and_2(
+    hass: HomeAssistant,
+) -> None:
     """Test async_setup_entry creates valves for getAB values 1 and 2."""
     data = {
         "devices": [
@@ -873,7 +972,9 @@ async def test_async_setup_entry_getab_valid_values_1_and_2(hass: HomeAssistant)
     assert len(entities) == 2
 
 
-async def test_async_setup_entry_boolean_and_boolean_string(hass: HomeAssistant) -> None:
+async def test_async_setup_entry_boolean_and_boolean_string(
+    hass: HomeAssistant,
+) -> None:
     """Test that native boolean and boolean-string getAB values create valves."""
     data = {
         "devices": [
@@ -895,29 +996,16 @@ async def test_async_setup_entry_boolean_and_boolean_string(hass: HomeAssistant)
     assert len(entities) == 4
 
 
-async def test_valve_initialization_with_sensor_key(hass: HomeAssistant) -> None:
-    """Test valve initialization with explicit sensor_key parameter."""
-    data = {"devices": [{"id": "sk1", "name": "SK1", "status": {}}]}
-    coordinator = _build_coordinator(hass, data)
-
-    # Create valve with explicit sensor_key
-    valve = SyrConnectValve(coordinator, "sk1", "SK1", sensor_key="getVLV")
-
-    assert valve._sensor_key == "getVLV"
-    assert valve._attr_unique_id == "sk1_getVLV"
-    assert valve._attr_translation_key == "getvlv"
-
-
-async def test_valve_initialization_default_sensor_key(hass: HomeAssistant) -> None:
-    """Test valve initialization defaults to 'getAB' sensor_key."""
+async def test_valve_initialization_uses_getab(hass: HomeAssistant) -> None:
+    """The valve is always the shut-off valve getAB."""
     data = {"devices": [{"id": "dsk", "name": "DSK", "status": {}}]}
     coordinator = _build_coordinator(hass, data)
 
-    # Create valve without sensor_key (should default to getAB)
     valve = SyrConnectValve(coordinator, "dsk", "DSK")
 
     assert valve._sensor_key == "getAB"
-    assert valve._attr_unique_id == "dsk_getAB"
+    assert valve.unique_id == "dsk_getAB"
+    assert valve.translation_key == "getab"
 
 
 async def test_async_open_close_with_native_boolean_status(hass: HomeAssistant) -> None:
@@ -943,7 +1031,6 @@ async def test_async_open_close_with_native_boolean_status(hass: HomeAssistant) 
 
 async def test_build_set_ab_command_respects_boolean_raw(hass: HomeAssistant) -> None:
     """Direct check that build_set_ab_command uses boolean/raw types correctly."""
-    from custom_components.syr_connect.helpers import build_set_ab_command
 
     # Native boolean True/False
     key, val = build_set_ab_command({"getAB": True}, True)
@@ -985,16 +1072,27 @@ async def test_state_unknown(hass: HomeAssistant) -> None:
     assert valve.state is None
 
 
-async def test_setup_getab_invalid_value_hits_except_branch(hass: HomeAssistant) -> None:
+async def test_setup_getab_invalid_value_hits_except_branch(
+    hass: HomeAssistant,
+) -> None:
     """Lines 78-79: getAB value that cannot be converted to float hits except branch.
+
     The entity must NOT be created (create stays False).
     """
-    data = {"devices": [{"id": "bad", "name": "Bad", "status": {"getAB": "not_a_number"}}]}
+    data = {
+        "devices": [{"id": "bad", "name": "Bad", "status": {"getAB": "not_a_number"}}]
+    }
     coordinator = _build_coordinator(hass, data)
 
     entry = MockConfigEntry(
-        version=1, minor_version=0, domain="syr_connect",
-        title="T", data={}, source="user", entry_id="e_bad", unique_id="u_bad",
+        version=1,
+        minor_version=0,
+        domain="conelclearpro_connect",
+        title="T",
+        data={},
+        source="user",
+        entry_id="e_bad",
+        unique_id="u_bad",
     )
     entry.runtime_data = coordinator
     entry.add_to_hass(hass)
@@ -1007,7 +1105,7 @@ async def test_setup_getab_invalid_value_hits_except_branch(hass: HomeAssistant)
 
 
 async def test_available_fallback_when_device_not_in_data(hass: HomeAssistant) -> None:
-    """Line 318: available property returns True when device_id is not in coordinator data."""
+    """The available property returns False when device_id is not in coordinator data (removed from the account)."""
     # Coordinator data contains a different device id
     data = {"devices": [{"id": "other", "name": "Other", "status": {}}]}
     coordinator = _build_coordinator(hass, data)
@@ -1015,7 +1113,7 @@ async def test_available_fallback_when_device_not_in_data(hass: HomeAssistant) -
     valve = SyrConnectValve(coordinator, "missing_id", "Missing")
 
     # Device not found -> falls through the loop -> return True
-    assert valve.available is True
+    assert valve.available is False
 
 
 # ---------------------------------------------------------------------------
@@ -1023,7 +1121,9 @@ async def test_available_fallback_when_device_not_in_data(hass: HomeAssistant) -
 # ---------------------------------------------------------------------------
 
 
-async def test_async_open_valve_no_alarm_delegates_to_set_device_value(hass: HomeAssistant) -> None:
+async def test_async_open_valve_no_alarm_delegates_to_set_device_value(
+    hass: HomeAssistant,
+) -> None:
     """When no alarm is active, async_open_valve falls through to async_set_device_value."""
     data = {
         "devices": [
@@ -1064,7 +1164,9 @@ async def test_async_open_valve_sentinel_alarm_no_clear(hass: HomeAssistant) -> 
     coordinator.async_set_device_value.assert_awaited_once_with("dev2", "setAB", 1)
 
 
-async def test_async_open_valve_active_alarm_xml_sends_multi_command(hass: HomeAssistant) -> None:
+async def test_async_open_valve_active_alarm_xml_sends_multi_command(
+    hass: HomeAssistant,
+) -> None:
     """Active alarm with XML API: clear + open sent in a single set_device_status_multi call."""
     data = {
         "devices": [
@@ -1089,9 +1191,10 @@ async def test_async_open_valve_active_alarm_xml_sends_multi_command(hass: HomeA
     )
 
 
-async def test_async_open_valve_active_alarm_json_calls_clr_then_set(hass: HomeAssistant) -> None:
+async def test_async_open_valve_active_alarm_json_calls_clr_then_set(
+    hass: HomeAssistant,
+) -> None:
     """Active alarm with JSON API: /clr/ala then /set/ab/1 as two sequential requests."""
-    from custom_components.syr_connect.api_json import SyrConnectJsonAPI
 
     data = {
         "devices": [
@@ -1116,7 +1219,9 @@ async def test_async_open_valve_active_alarm_json_calls_clr_then_set(hass: HomeA
     coordinator.api.set_device_status.assert_awaited_once_with("dev4", [("setAB", 1)])
 
 
-async def test_async_open_valve_alarm_style_alm_uses_clr_alm(hass: HomeAssistant) -> None:
+async def test_async_open_valve_alarm_style_alm_uses_clr_alm(
+    hass: HomeAssistant,
+) -> None:
     """alarm_style_alm=True (LEXplus10S): active alarm in getALM -> prepend clrALM."""
     data = {
         "devices": [
@@ -1140,7 +1245,9 @@ async def test_async_open_valve_alarm_style_alm_uses_clr_alm(hass: HomeAssistant
     )
 
 
-async def test_async_open_valve_alarm_clear_via_set_sends_set_ala_ff(hass: HomeAssistant) -> None:
+async def test_async_open_valve_alarm_clear_via_set_sends_set_ala_ff(
+    hass: HomeAssistant,
+) -> None:
     """alarm_clear_via_set=True (Trio LS): clear is setALA FF, bundled with setAB."""
     data = {
         "devices": [
@@ -1200,9 +1307,7 @@ async def test_async_open_valve_error_propagates(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    coordinator.api.set_device_status = AsyncMock(
-        side_effect=ValueError("API failure")
-    )
+    coordinator.api.set_device_status = AsyncMock(side_effect=ValueError("API failure"))
     valve = SyrConnectValve(coordinator, "v_err", "VErr")
     valve.async_write_ha_state = Mock()
 
@@ -1218,23 +1323,29 @@ async def test_async_open_valve_error_propagates(hass: HomeAssistant) -> None:
 async def test_async_open_valve_no_data_raises(hass: HomeAssistant) -> None:
     """async_open_valve raises HomeAssistantError when coordinator data is not available."""
     coordinator = _build_coordinator(hass, {"devices": []})
-    coordinator.data = None  # type: ignore[assignment]  # force data to be falsy
+    coordinator.data = None  # force data to be falsy
 
-    with pytest.raises(HomeAssistantError, match="Coordinator data not available"):
+    with pytest.raises(HomeAssistantError, match="coordinator_data_unavailable"):
         await coordinator.async_open_valve("dev_x", "setAB", 1)
 
 
 async def test_async_open_valve_unknown_device_raises(hass: HomeAssistant) -> None:
     """async_open_valve raises HomeAssistantError when device_id is not in devices list."""
-    data = {"devices": [{"id": "other_device", "name": "Other", "project_id": "p1", "status": {}}]}
+    data = {
+        "devices": [
+            {"id": "other_device", "name": "Other", "project_id": "p1", "status": {}}
+        ]
+    }
     coordinator = _build_coordinator(hass, data)
 
-    with pytest.raises(HomeAssistantError, match="Device missing_device not found"):
+    with pytest.raises(HomeAssistantError, match="device_not_found"):
         await coordinator.async_open_valve("missing_device", "setAB", 1)
 
 
-async def test_async_open_valve_alarm_detection_exception_falls_back_to_set(hass: HomeAssistant) -> None:
-    """When detect_model raises, alarm detection fails gracefully and valve opens normally."""
+async def test_async_open_valve_alarm_detection_exception_falls_back_to_set(
+    hass: HomeAssistant,
+) -> None:
+    """When the model lookup raises, alarm detection fails gracefully and valve opens normally."""
     data = {
         "devices": [
             {
@@ -1248,16 +1359,20 @@ async def test_async_open_valve_alarm_detection_exception_falls_back_to_set(hass
     coordinator = _build_coordinator(hass, data)
     coordinator.async_set_device_value = AsyncMock()
 
-    with patch("custom_components.syr_connect.coordinator.detect_model", side_effect=RuntimeError("boom")):
+    with patch(
+        "custom_components.conelclearpro_connect.coordinator.get_device_model",
+        side_effect=RuntimeError("boom"),
+    ):
         await coordinator.async_open_valve("dev_x", "setAB", 1)
 
     # Should fall back to normal open (no clear) because detection failed
     coordinator.async_set_device_value.assert_awaited_once_with("dev_x", "setAB", 1)
 
 
-async def test_async_open_valve_optimistic_update_exception_still_sends_command(hass: HomeAssistant) -> None:
+async def test_async_open_valve_optimistic_update_exception_still_sends_command(
+    hass: HomeAssistant,
+) -> None:
     """Optimistic update failure is logged as warning; the valve command is still sent."""
-    from custom_components.syr_connect.api_json import SyrConnectJsonAPI
 
     data = {
         "devices": [
@@ -1276,16 +1391,20 @@ async def test_async_open_valve_optimistic_update_exception_still_sends_command(
     coordinator.api.set_device_status = AsyncMock(return_value=True)
     coordinator.hass.async_create_task = Mock(side_effect=_consume_coro_return_task)
 
-    with patch("custom_components.syr_connect.coordinator.copy.deepcopy", side_effect=TypeError("deepcopy failed")):
+    with patch(
+        "custom_components.conelclearpro_connect.coordinator.copy.deepcopy",
+        side_effect=TypeError("deepcopy failed"),
+    ):
         await coordinator.async_open_valve("dev_y", "setAB", 1)
 
     # Valve command should still be sent despite optimistic update failure
     coordinator.api.set_device_status.assert_awaited_once_with("dev_y", [("setAB", 1)])
 
 
-async def test_async_open_valve_alarm_clear_via_set_json_api_sends_set_then_open(hass: HomeAssistant) -> None:
+async def test_async_open_valve_alarm_clear_via_set_json_api_sends_set_then_open(
+    hass: HomeAssistant,
+) -> None:
     """alarm_clear_via_set=True with JSON API: uses set_device_status for clear (not request_json_data)."""
-    from custom_components.syr_connect.api_json import SyrConnectJsonAPI
 
     data = {
         "devices": [
@@ -1305,9 +1424,115 @@ async def test_async_open_valve_alarm_clear_via_set_json_api_sends_set_then_open
 
     await coordinator.async_open_valve("dev_z", "setAB", 1)
 
-    # First call: clear alarm via set_device_status (clear_prefix starts with "set")
-    # Second call: open valve
-    assert coordinator.api.set_device_status.await_count == 2
-    calls = coordinator.api.set_device_status.await_args_list
-    assert calls[0].args == ("dev_z", [("setALA", "FF")])
-    assert calls[1].args == ("dev_z", [("setAB", 1)])
+    # Clear (setALA=FF) and open in one call; the JSON API sends the commands one after another
+    coordinator.api.set_device_status.assert_awaited_once_with(
+        "dev_z", [("setALA", "FF"), ("setAB", 1)]
+    )
+    # Both values are shown optimistically: valve open, alarm cleared
+    assert coordinator.data is not None
+    status = coordinator.data["devices"][0]["status"]
+    assert status["getAB"] == "1"
+    assert status["getALA"] == "FF"
+
+
+# ---------------------------------------------------------------------------
+# Optimistic update and rollback when the command does not reach the cloud
+# ---------------------------------------------------------------------------
+
+
+def _valve_data(status: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "devices": [
+            {"id": "dev1", "name": "Dev1", "project_id": "p1", "status": status}
+        ]
+    }
+
+
+def _status(coordinator: SyrConnectDataUpdateCoordinator) -> dict[str, Any]:
+    assert coordinator.data is not None
+    return coordinator.data["devices"][0]["status"]
+
+
+async def test_close_valve_accepted_keeps_optimistic_value(hass: HomeAssistant) -> None:
+    """HTTP 200 only means "accepted"; the optimistic value stays until the next poll shows the real one."""
+    coordinator = _build_coordinator(hass, _valve_data({"getAB": "1"}))
+    coordinator.api.set_device_status = AsyncMock(return_value=True)
+
+    await coordinator.async_set_device_value("dev1", "setAB", "2")
+
+    assert _status(coordinator)["getAB"] == "2"
+
+
+async def test_close_valve_request_failure_restores_previous_value(
+    hass: HomeAssistant,
+) -> None:
+    """If the request fails (no answer), the valve must not stay shown as closed."""
+    coordinator = _build_coordinator(hass, _valve_data({"getAB": "1"}))
+    coordinator.api.set_device_status = AsyncMock(side_effect=TimeoutError("no answer"))
+
+    with pytest.raises(TimeoutError):
+        await coordinator.async_set_device_value("dev1", "setAB", "2")
+
+    assert _status(coordinator)["getAB"] == "1"
+
+
+async def test_set_device_values_sends_one_request_and_updates_all_keys(
+    hass: HomeAssistant,
+) -> None:
+    """Several commands (e.g. setRTH + setRTM) go to the API in one call and update all values."""
+    coordinator = _build_coordinator(hass, _valve_data({"getRTH": "2", "getRTM": "30"}))
+    coordinator.api.set_device_status = AsyncMock(return_value=True)
+
+    await coordinator.async_set_device_values("dev1", [("setRTH", 3), ("setRTM", 45)])
+
+    coordinator.api.set_device_status.assert_awaited_once_with(
+        "dev1", [("setRTH", 3), ("setRTM", 45)]
+    )
+    assert _status(coordinator)["getRTH"] == "3"
+    assert _status(coordinator)["getRTM"] == "45"
+
+
+async def test_set_device_values_failure_restores_all_keys(hass: HomeAssistant) -> None:
+    """If the request fails, none of the values stays changed (no new hour with the old minute)."""
+    coordinator = _build_coordinator(hass, _valve_data({"getRTH": "2", "getRTM": "30"}))
+    coordinator.api.set_device_status = AsyncMock(side_effect=TimeoutError("no answer"))
+
+    with pytest.raises(TimeoutError):
+        await coordinator.async_set_device_values(
+            "dev1", [("setRTH", 3), ("setRTM", 45)]
+        )
+
+    assert _status(coordinator)["getRTH"] == "2"
+    assert _status(coordinator)["getRTM"] == "30"
+
+
+async def test_request_failure_does_not_overwrite_newer_poll_data(
+    hass: HomeAssistant,
+) -> None:
+    """If a poll delivered new data while the request was running, that data is kept."""
+    coordinator = _build_coordinator(hass, _valve_data({"getAB": "1"}))
+    polled = _valve_data({"getAB": "1", "getFLO": "7"})
+
+    async def _poll_then_fail(*_args: Any) -> None:
+        coordinator.async_set_updated_data(cast(Any, polled))
+        raise TimeoutError("no answer")
+
+    coordinator.api.set_device_status = AsyncMock(side_effect=_poll_then_fail)
+
+    with pytest.raises(TimeoutError):
+        await coordinator.async_set_device_value("dev1", "setAB", "2")
+
+    assert coordinator.data is polled
+
+
+async def test_open_valve_with_alarm_clear_failure_restores_previous_value(
+    hass: HomeAssistant,
+) -> None:
+    """The alarm-clear + open path rolls back the optimistic "open" as well."""
+    coordinator = _build_coordinator(hass, _valve_data({"getAB": "2", "getALA": "A5"}))
+    coordinator.api.set_device_status = AsyncMock(side_effect=TimeoutError("no answer"))
+
+    with pytest.raises(TimeoutError):
+        await coordinator.async_open_valve("dev1", "setAB", "1")
+
+    assert _status(coordinator)["getAB"] == "2"

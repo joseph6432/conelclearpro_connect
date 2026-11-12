@@ -1,27 +1,40 @@
 """The SYR Connect integration."""
-from __future__ import annotations
 
 import copy
 import logging
-from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryError,
+    ConfigEntryNotReady,
+)
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .config_flow import ConfigFlow
 from .const import (
-    _SYR_CONNECT_API_JSON_SCAN_INTERVAL_MINIMUM,
-    _SYR_CONNECT_API_XML_SCAN_INTERVAL_MINIMUM,
+    _conelclearpro_connect_API_JSON_SCAN_INTERVAL_MINIMUM,
+    _conelclearpro_connect_API_XML_SCAN_INTERVAL_MINIMUM,
     API_TYPE_JSON,
     API_TYPE_XML,
     CONF_API_TYPE,
     CONF_HOST,
+    DOMAIN,
 )
-from .coordinator import SyrConnectDataUpdateCoordinator
-from .helpers import cleanup_removed_devices, get_default_scan_interval_for_entry
+from .coordinator import (
+    SyrConnectConfigEntry,
+    SyrConnectDataUpdateCoordinator,
+    SyrConnectStatisticsCoordinator,
+)
+from .exceptions import SyrConnectConnectionError, SyrConnectError
+from .helpers import (
+    cleanup_removed_devices,
+    clear_device_statistics,
+    get_default_scan_interval_for_entry,
+)
 from .migrations import (
     v1_to_v2_update_kwargs,
     v2_to_v3_fix_flo_unit,
@@ -29,6 +42,9 @@ from .migrations import (
     v4_to_v5_remove_sta_binary_sensor,
     v5_to_v6_fix_nps_unit,
     v6_to_v7_scope_unique_id_by_entry,
+    v7_to_v8_rename_local_model,
+    v8_to_v9_detect_local_model,
+    v9_to_v10_entry_unique_id_by_service,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,6 +90,19 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
       6 → 7: Prefix entity unique_ids with the owning config entry ID so the
              same physical device reachable from multiple hubs (config
              entries) no longer collides on a shared unique_id.
+      7 → 8: Rename the Optima T2.3 and the generic NeoSoft local JSON API models
+             (CONF_MODEL).
+      8 → 9: Replace removed generic MultiController local JSON API models
+             (CONF_MODEL) with the model detected from the device.
+      9 → 10: Add the cloud service (cf_bundle_identifier) to the unique_id of
+             cloud entries, so the same e-mail address can be set up for two
+             services, which have accounts of their own.
+
+    Raises:
+        ConfigEntryNotReady: If the local device cannot be reached to detect its
+            model (v8 -> v9); Home Assistant retries the migration later.
+        ConfigEntryError: If the model of the local device cannot be detected
+            (v8 -> v9).
     """
     # If the config entry version is from the future, we must not attempt
     # to migrate it — Home Assistant expects us to return False so the
@@ -86,7 +115,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         return False
 
-    _LOGGER.debug("Migrating config entry '%s' from version %d", entry.title, entry.version)
+    _LOGGER.debug(
+        "Migrating config entry '%s' from version %d", entry.title, entry.version
+    )
 
     # Delegate migration steps to helpers in migrations.py
     # Migrate v1 -> v2
@@ -96,13 +127,20 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if update_kwargs:
             # Mask sensitive fields for logging only;
             safe_update = _mask_sensitive_data(update_kwargs)
-            _LOGGER.debug("Applying v1->v2 migration for entry %s: %s", entry.entry_id, safe_update)
+            _LOGGER.debug(
+                "Applying v1->v2 migration for entry %s: %s",
+                entry.entry_id,
+                safe_update,
+            )
             hass.config_entries.async_update_entry(entry, **update_kwargs)
 
     # Migrate v2 -> v3
     # Integration version 1.21.0 -> 1.22.0
     if entry.version == 2:
-        _LOGGER.debug("Applying v2->v3 migration for entry %s: resetting getFLO unit override", entry.entry_id)
+        _LOGGER.debug(
+            "Applying v2->v3 migration for entry %s: resetting getFLO unit override",
+            entry.entry_id,
+        )
         v2_to_v3_fix_flo_unit(hass, entry)
         hass.config_entries.async_update_entry(entry, version=3)
 
@@ -112,7 +150,11 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_kwargs = v3_to_v4_add_service(entry)
         if update_kwargs:
             safe_update = _mask_sensitive_data(update_kwargs)
-            _LOGGER.debug("Applying v3->v4 migration for entry %s: %s", entry.entry_id, safe_update)
+            _LOGGER.debug(
+                "Applying v3->v4 migration for entry %s: %s",
+                entry.entry_id,
+                safe_update,
+            )
             hass.config_entries.async_update_entry(entry, **update_kwargs)
         else:
             hass.config_entries.async_update_entry(entry, version=4)
@@ -120,47 +162,129 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Migrate v4 -> v5
     # Integration version: sta entity moved from binary_sensor to sensor
     if entry.version == 4:
-        _LOGGER.debug("Applying v4->v5 migration for entry %s: removing stale sta binary_sensor", entry.entry_id)
+        _LOGGER.debug(
+            "Applying v4->v5 migration for entry %s: removing stale sta binary_sensor",
+            entry.entry_id,
+        )
         v4_to_v5_remove_sta_binary_sensor(hass, entry)
         hass.config_entries.async_update_entry(entry, version=5)
 
     # Migrate v5 -> v6
     # Integration version: getNPS native_unit_of_measurement changed from "" to "s"
     if entry.version == 5:
-        _LOGGER.debug("Applying v5->v6 migration for entry %s: resetting getNPS unit override", entry.entry_id)
+        _LOGGER.debug(
+            "Applying v5->v6 migration for entry %s: resetting getNPS unit override",
+            entry.entry_id,
+        )
         v5_to_v6_fix_nps_unit(hass, entry)
         hass.config_entries.async_update_entry(entry, version=6)
 
     # Migrate v6 -> v7
     # Integration version: unique_id scoped per config entry to avoid cross-hub collisions
     if entry.version == 6:
-        _LOGGER.debug("Applying v6->v7 migration for entry %s: scoping unique_ids by entry", entry.entry_id)
+        _LOGGER.debug(
+            "Applying v6->v7 migration for entry %s: scoping unique_ids by entry",
+            entry.entry_id,
+        )
         v6_to_v7_scope_unique_id_by_entry(hass, entry)
         hass.config_entries.async_update_entry(entry, version=7)
+
+    # Migrate v7 -> v8
+    # Integration version: Optima T2.3 local model renamed, generic NeoSoft is the NeoSoft 5000
+    if entry.version == 7:
+        update_kwargs = v7_to_v8_rename_local_model(entry)
+        if update_kwargs:
+            _LOGGER.debug(
+                "Applying v7->v8 migration for entry %s: %s",
+                entry.entry_id,
+                _mask_sensitive_data(update_kwargs),
+            )
+            hass.config_entries.async_update_entry(entry, **update_kwargs)
+        else:
+            hass.config_entries.async_update_entry(entry, version=8)
+
+    # Migrate v8 -> v9
+    # Integration version: generic MultiController local models removed
+    if entry.version == 8:
+        try:
+            update_kwargs = await v8_to_v9_detect_local_model(hass, entry)
+        except SyrConnectConnectionError as err:
+            # Leaves the entry at version 8; Home Assistant retries the migration
+            _LOGGER.error(
+                "Cannot migrate %s: the device is not reachable to detect its model, "
+                "the migration is retried: %s",
+                entry.title,
+                err,
+            )
+            raise ConfigEntryNotReady(
+                translation_domain=DOMAIN,
+                translation_key="migration_cannot_connect",
+                translation_placeholders={"device": entry.title},
+            ) from err
+        except SyrConnectError as err:
+            _LOGGER.error(
+                "Cannot migrate %s: the model of the device cannot be detected, remove "
+                "the entry and set up the device again: %s",
+                entry.title,
+                err,
+            )
+            raise ConfigEntryError(
+                translation_domain=DOMAIN,
+                translation_key="migration_model_not_detected",
+                translation_placeholders={"device": entry.title},
+            ) from err
+        if update_kwargs:
+            _LOGGER.debug(
+                "Applying v8->v9 migration for entry %s: %s",
+                entry.entry_id,
+                _mask_sensitive_data(update_kwargs),
+            )
+            hass.config_entries.async_update_entry(entry, **update_kwargs)
+        else:
+            hass.config_entries.async_update_entry(entry, version=9)
+
+    # Migrate v9 -> v10
+    # Integration version: the unique_id of cloud entries contains the service
+    if entry.version == 9:
+        update_kwargs = v9_to_v10_entry_unique_id_by_service(entry)
+        if update_kwargs:
+            _LOGGER.debug(
+                "Applying v9->v10 migration for entry %s: %s",
+                entry.entry_id,
+                update_kwargs,
+            )
+            hass.config_entries.async_update_entry(entry, **update_kwargs)
+        else:
+            hass.config_entries.async_update_entry(entry, version=10)
 
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: SyrConnectConfigEntry) -> bool:
     """Set up SYR Connect from a config entry."""
     api_type = entry.data.get(CONF_API_TYPE, API_TYPE_XML)
     api_identifier = (
-        entry.data.get(CONF_HOST) if api_type == API_TYPE_JSON else entry.data.get(CONF_USERNAME, "unknown")
+        entry.data.get(CONF_HOST)
+        if api_type == API_TYPE_JSON
+        else entry.data.get(CONF_USERNAME, "unknown")
     )
-    _LOGGER.info("Setting up SYR Connect integration (%s API) for: %s", api_type.upper(), api_identifier)
+    _LOGGER.debug(
+        "Setting up SYR Connect integration (%s API) for: %s",
+        api_type.upper(),
+        api_identifier,
+    )
 
     session = async_get_clientsession(hass)
 
-    # Get scan interval from options. If not set, use per-API default (JSON uses
-    # a faster default). This ensures new JSON/local entries default to
-    # `_SYR_CONNECT_API_JSON_SCAN_INTERVAL_DEFAULT`.
+    # Get scan interval from options. If not set, use the per-API default, so new
+    # JSON/local entries default to `_conelclearpro_connect_API_JSON_SCAN_INTERVAL_DEFAULT`.
     scan_interval = get_default_scan_interval_for_entry(entry)
 
     # Enforce minimum scan interval depending on API type using named constants
     min_allowed = (
-        _SYR_CONNECT_API_JSON_SCAN_INTERVAL_MINIMUM
+        _conelclearpro_connect_API_JSON_SCAN_INTERVAL_MINIMUM
         if api_type == API_TYPE_JSON
-        else _SYR_CONNECT_API_XML_SCAN_INTERVAL_MINIMUM
+        else _conelclearpro_connect_API_XML_SCAN_INTERVAL_MINIMUM
     )
     if scan_interval < min_allowed:
         _LOGGER.warning(
@@ -176,13 +300,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         session,
         dict(entry.data),
         scan_interval,
+        config_entry=entry,
     )
-
-    # Attach config entry to coordinator for options access
-    coordinator.config_entry = entry
-    # Scope entity unique_ids to this entry so the same physical device
-    # reachable from multiple hubs doesn't collide (see build_unique_id).
-    coordinator.entry_id = entry.entry_id
 
     try:
         await coordinator.async_config_entry_first_refresh()
@@ -191,29 +310,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise
     except Exception as err:
         _LOGGER.error("Failed to connect to SYR Connect API: %s", err)
-        raise ConfigEntryNotReady(f"Unable to connect to SYR Connect: {err}") from err
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="setup_cannot_connect",
+        ) from err
 
     entry.runtime_data = coordinator
 
-    # Detach devices that were removed from the account (e.g. by another user
+    # Remove devices that were removed from the account (e.g. by another user
     # of the same hub) so they don't linger in HA forever alongside their entities.
-    cleanup_removed_devices(hass, coordinator.data, entry.entry_id)
-
-    # Register listener for options changes (scan_interval updates)
-    entry.async_on_unload(entry.add_update_listener(async_options_update_listener))
+    # Skipped if a project's device list failed: its devices are missing, not deleted.
+    if coordinator.device_list_complete:
+        cleanup_removed_devices(hass, coordinator.data, entry.entry_id)
+    else:
+        _LOGGER.warning("Device list incomplete; skipping removal of stale devices")
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Measurement history of battery devices; only the cloud keeps it. It must not
+    # delay or fail the setup, so its first run is a background task.
+    if api_type == API_TYPE_XML:
+        statistics = SyrConnectStatisticsCoordinator(hass, entry, coordinator)
+        entry.async_create_background_task(
+            hass, statistics.async_refresh(), f"{DOMAIN} statistics"
+        )
     _LOGGER.info("SYR Connect integration setup completed")
 
     return True
 
 
-async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the config entry."""
-    await hass.config_entries.async_reload(entry.entry_id)
-
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: SyrConnectConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.info("Unloading SYR Connect integration")
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
@@ -226,35 +352,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
-async def async_options_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options update (scan_interval changes)."""
-    old_scan_interval = entry.runtime_data.update_interval.total_seconds()
-    new_scan_interval = get_default_scan_interval_for_entry(entry)
-
-    # Enforce the same minimum as async_setup_entry so no code path can
-    # bypass the per-API floor, even if the config flow schema changes.
-    api_type = entry.data.get(CONF_API_TYPE, API_TYPE_XML)
-    min_allowed = (
-        _SYR_CONNECT_API_JSON_SCAN_INTERVAL_MINIMUM
-        if api_type == API_TYPE_JSON
-        else _SYR_CONNECT_API_XML_SCAN_INTERVAL_MINIMUM
-    )
-    if new_scan_interval < min_allowed:
-        _LOGGER.warning(
-            "Options scan interval %d is below minimum for %s API; clamping to %d seconds",
-            new_scan_interval,
-            api_type,
-            min_allowed,
+async def async_remove_entry(hass: HomeAssistant, entry: SyrConnectConfigEntry) -> None:
+    """Delete the measurement history statistics of the devices of a removed entry."""
+    device_ids = {
+        identifier
+        for device_entry in dr.async_entries_for_config_entry(
+            dr.async_get(hass), entry.entry_id
         )
-        new_scan_interval = min_allowed
-
-    if old_scan_interval != new_scan_interval:
-        _LOGGER.info(
-            "Scan interval updated from %d to %d seconds, reloading coordinator",
-            int(old_scan_interval),
-            new_scan_interval,
-        )
-        entry.runtime_data.update_interval = timedelta(seconds=new_scan_interval)
-        await entry.runtime_data.async_request_refresh()
-    else:
-        _LOGGER.debug("Options updated but scan interval unchanged")
+        for domain, identifier in device_entry.identifiers
+        if domain == DOMAIN
+    }
+    clear_device_statistics(hass, entry.entry_id, device_ids)

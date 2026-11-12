@@ -1,26 +1,26 @@
 """Config flow for SYR Connect integration."""
 
-from __future__ import annotations
-
 import logging
-from typing import Any
+from typing import Any, override
 
-import voluptuous as vol
+import probatio
+
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .api_json import SyrConnectJsonAPI
+from .api_xml import SyrConnectXmlAPI
 from .const import (
-    _SYR_CONNECT_API_JSON_SCAN_INTERVAL_MINIMUM,
-    _SYR_CONNECT_API_SCAN_INTERVAL_MAXIMUM,
-    _SYR_CONNECT_API_SERVICES,
-    _SYR_CONNECT_API_XML_SCAN_INTERVAL_MINIMUM,
-    _SYR_CONNECT_DEFAULT_CF_BUNDLE_IDENTIFIER,
-    _SYR_CONNECT_SCAN_INTERVAL_CONF,
+    _conelclearpro_connect_API_JSON_SCAN_INTERVAL_MINIMUM,
+    _conelclearpro_connect_API_SCAN_INTERVAL_MAXIMUM,
+    _conelclearpro_connect_API_SERVICES,
+    _conelclearpro_connect_API_XML_SCAN_INTERVAL_MINIMUM,
+    _conelclearpro_connect_DEFAULT_CF_BUNDLE_IDENTIFIER,
+    _conelclearpro_connect_SCAN_INTERVAL_CONF,
     API_TYPE_JSON,
     API_TYPE_XML,
     CONF_API_TYPE,
@@ -30,34 +30,55 @@ from .const import (
     CONF_SERVICE,
     DOMAIN,
 )
-from .exceptions import CannotConnectError, HostInvalidError, InvalidAuthError
-from .helpers import get_default_scan_interval_for_entry, is_valid_host
+from .exceptions import (
+    CannotConnectError,
+    HostInvalidError,
+    HostWithPortError,
+    InvalidAuthError,
+    SyrConnectAuthError,
+    SyrConnectConnectionError,
+    SyrConnectLoginFailedError,
+)
+from .helpers import (
+    build_entry_unique_id,
+    get_api_locale,
+    get_default_scan_interval_for_entry,
+    host_has_port,
+    is_valid_host,
+)
 from .models import MODEL_SIGNATURES
 
 _LOGGER = logging.getLogger(__name__)
 
 # Schema for Cloud/XML API initial setup (backend selector + username + password)
-STEP_CLOUD_XML_DATA_SCHEMA = vol.Schema(
+STEP_CLOUD_XML_DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_SERVICE, default=_SYR_CONNECT_DEFAULT_CF_BUNDLE_IDENTIFIER): selector.SelectSelector(
+        probatio.Required(
+            CONF_SERVICE, default=_conelclearpro_connect_DEFAULT_CF_BUNDLE_IDENTIFIER
+        ): selector.SelectSelector(
             selector.SelectSelectorConfig(
                 options=[
-                    selector.SelectOptionDict(value=svc["cf_bundle_identifier"], label=svc["display_name"])
-                    for svc in sorted(_SYR_CONNECT_API_SERVICES.values(), key=lambda s: s["display_name"].casefold())
+                    selector.SelectOptionDict(
+                        value=svc.cf_bundle_identifier, label=svc.display_name
+                    )
+                    for svc in sorted(
+                        _conelclearpro_connect_API_SERVICES.values(),
+                        key=lambda s: s.display_name.casefold(),
+                    )
                 ],
                 mode=selector.SelectSelectorMode.DROPDOWN,
             )
         ),
-        vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): str,
+        probatio.Required(CONF_USERNAME): str,
+        probatio.Required(CONF_PASSWORD): str,
     }
 )
 
 # Schema for reauth (backend already set — only credentials needed)
-_STEP_REAUTH_XML_DATA_SCHEMA = vol.Schema(
+_STEP_REAUTH_XML_DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): str,
+        probatio.Required(CONF_USERNAME): str,
+        probatio.Required(CONF_PASSWORD): str,
     }
 )
 
@@ -66,19 +87,19 @@ _STEP_REAUTH_XML_DATA_SCHEMA = vol.Schema(
 LOCAL_API_MODELS = sorted(
     [
         (
-            sig["name"],
-            f"{sig['manufacturer']} {sig['display_name']}",
+            sig.name,
+            f"{sig.manufacturer} {sig.display_name}",
         )
         for sig in MODEL_SIGNATURES
-        if sig.get("base_path") is not None
+        if sig.base_path is not None
     ],
     key=lambda x: x[1].casefold(),  # Sort by display_name (case-insensitive)
 )
 
 # Schema for Local/JSON API configuration (host + model)
-STEP_LOCAL_JSON_DATA_SCHEMA = vol.Schema(
+STEP_LOCAL_JSON_DATA_SCHEMA = probatio.Schema(
     {
-        vol.Required(CONF_MODEL): selector.SelectSelector(
+        probatio.Required(CONF_MODEL): selector.SelectSelector(
             selector.SelectSelectorConfig(
                 options=[
                     selector.SelectOptionDict(value=name, label=display)
@@ -87,12 +108,14 @@ STEP_LOCAL_JSON_DATA_SCHEMA = vol.Schema(
                 mode=selector.SelectSelectorMode.DROPDOWN,
             )
         ),
-        vol.Required(CONF_HOST): str,
+        probatio.Required(CONF_HOST): str,
     }
 )
 
 
-async def validate_input_xml(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+async def validate_input_xml(
+    hass: HomeAssistant, data: dict[str, Any]
+) -> dict[str, Any]:
     """Validate the user input for Cloud/XML API.
 
     Args:
@@ -106,36 +129,27 @@ async def validate_input_xml(hass: HomeAssistant, data: dict[str, Any]) -> dict[
         CannotConnectError: If connection to API fails
         InvalidAuthError: If authentication fails
     """
-
-    # Import here so tests can patch the API class via its module
-    from .api_xml import SyrConnectXmlAPI
-    from .exceptions import SyrConnectAuthError, SyrConnectConnectionError
-
     _LOGGER.debug("Validating XML API credentials for user: %s", data[CONF_USERNAME])
     session = async_get_clientsession(hass)
 
-    # Look up backend-specific parameters from _SYR_CONNECT_API_SERVICES
-    conf_service = data.get(CONF_SERVICE)
-    svc = _SYR_CONNECT_API_SERVICES.get(conf_service) if conf_service else None
-    api_app_name = svc["api_app_name"] if svc else None
-    api_base_url = svc["api_base_url"] if svc else None
-    cf_bundle_identifier = svc["cf_bundle_identifier"] if svc else None
-    display_name = (svc["display_name"] if svc else None)
+    # The schema only offers services of _conelclearpro_connect_API_SERVICES
+    svc = _conelclearpro_connect_API_SERVICES[data[CONF_SERVICE]]
 
     api = SyrConnectXmlAPI(
         session,
         data[CONF_USERNAME],
         data[CONF_PASSWORD],
-        api_app_name=api_app_name,
-        api_base_url=api_base_url,
-        cf_bundle_identifier=cf_bundle_identifier,
+        service=svc,
+        language=get_api_locale(hass.config.language, hass.config.country),
     )
 
     # Test authentication
     _LOGGER.debug("Testing XML API authentication...")
     try:
         await api.login()
-    except SyrConnectAuthError as err:
+    except (SyrConnectAuthError, SyrConnectLoginFailedError) as err:
+        # The cloud answers an unknown username like an outage (SyrConnectLoginFailedError);
+        # while setting up, wrong credentials are the likely cause
         _LOGGER.error("XML API: authentication failed: %s", err)
         raise InvalidAuthError from err
     except SyrConnectConnectionError as err:
@@ -145,13 +159,61 @@ async def validate_input_xml(hass: HomeAssistant, data: dict[str, Any]) -> dict[
         _LOGGER.error("XML API: unexpected error during validation: %s", err)
         raise CannotConnectError from err
 
-    _LOGGER.info("XML API: authentication successful for user: %s", data[CONF_USERNAME])
+    _LOGGER.debug(
+        "XML API: authentication successful for user: %s", data[CONF_USERNAME]
+    )
 
-    title_label = display_name or "SYR Connect"
-    return {"title": f"{title_label} ({data[CONF_USERNAME]})"}
+    return {"title": f"{svc.display_name} ({data[CONF_USERNAME]})"}
 
 
-async def validate_input_json(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+async def _async_validate_json_device(api: SyrConnectJsonAPI) -> None:
+    """Log in to the local device and check that it answers like a SYR device.
+
+    Args:
+        api: JSON API client for the device
+
+    Raises:
+        CannotConnectError: If the device returns no usable data
+    """
+    await api.login()
+
+    # Use the public API methods to retrieve devices and status. This
+    # avoids calling private methods and keeps encapsulation intact.
+    devices = await api.get_devices("local")
+    if not devices:
+        _LOGGER.error("JSON API: no devices returned from get_devices()")
+        raise CannotConnectError
+
+    # get_devices() returns a list of device dicts; take the first device
+    device = devices[0]
+    device_id = device.get("id")
+    if not device_id:
+        _LOGGER.error("JSON API: device entry missing id")
+        raise CannotConnectError
+
+    # Fetch full status for the device. get_device_status() will reuse the
+    # cached /get/all response set by get_devices(), avoiding an extra API call.
+    data_result = await api.get_device_status(device_id)
+    if not data_result:
+        _LOGGER.error("JSON API: returned empty status from get_device_status()")
+        raise CannotConnectError
+
+    # Verify this is a SYR device by checking for serial number fields and extract serial
+    serial = data_result.get("getSRN") or data_result.get("getFRN")
+    if not serial:
+        _LOGGER.error("JSON API: response missing getSRN/getFRN - not a SYR device?")
+        raise CannotConnectError
+
+    _LOGGER.debug(
+        "JSON API: Successfully validated SYR device with serial %s and %d status keys",
+        serial,
+        len(data_result),
+    )
+
+
+async def validate_input_json(
+    hass: HomeAssistant, data: dict[str, Any]
+) -> dict[str, Any]:
     """Validate the user input for Local/JSON API.
 
     Args:
@@ -166,13 +228,15 @@ async def validate_input_json(hass: HomeAssistant, data: dict[str, Any]) -> dict
     """
     host = data[CONF_HOST]
 
-    # Import here so tests can patch the API class via its module
-    from .api_json import SyrConnectJsonAPI
-    from .exceptions import SyrConnectAuthError, SyrConnectConnectionError
-
     # Use central helper for IP/hostname validation
     if not is_valid_host(host):
-        _LOGGER.error("Host field is not a valid IP address or hostname. Received: %s", host)
+        # A port gets its own error, so the user is told to leave it out (host_no_port)
+        if host_has_port(host):
+            _LOGGER.error("Host field must not include a port. Received: %s", host)
+            raise HostWithPortError("Host must not include a port.")
+        _LOGGER.error(
+            "Host field is not a valid IP address or hostname. Received: %s", host
+        )
         raise HostInvalidError("Host must be a valid IP address or hostname.")
 
     model = data[CONF_MODEL]
@@ -182,8 +246,8 @@ async def validate_input_json(hass: HomeAssistant, data: dict[str, Any]) -> dict
     # Get base_path for the selected model
     base_path = None
     for sig in MODEL_SIGNATURES:
-        if sig["name"] == model:
-            base_path = sig.get("base_path")
+        if sig.name == model:
+            base_path = sig.base_path
             break
 
     if base_path is None:
@@ -196,37 +260,7 @@ async def validate_input_json(hass: HomeAssistant, data: dict[str, Any]) -> dict
     # Test connection by attempting login and fetching device data via public API
     _LOGGER.debug("Testing JSON API connection...")
     try:
-        await api.login()
-
-        # Use the public API methods to retrieve devices and status. This
-        # avoids calling private methods and keeps encapsulation intact.
-        devices = await api.get_devices("local")
-        if not devices:
-            _LOGGER.error("JSON API: no devices returned from get_devices()")
-            raise CannotConnectError
-
-        # get_devices() returns a list of device dicts; take the first device
-        device = devices[0]
-        device_id = device.get("id")
-        if not device_id:
-            _LOGGER.error("JSON API: device entry missing id")
-            raise CannotConnectError
-
-        # Fetch full status for the device. get_device_status() will reuse the
-        # cached /get/all response set by get_devices(), avoiding an extra API call.
-        data_result = await api.get_device_status(device_id)
-        if not data_result:
-            _LOGGER.error("JSON API: returned empty status from get_device_status()")
-            raise CannotConnectError
-
-        # Verify this is a SYR device by checking for serial number fields and extract serial
-        serial = data_result.get("getSRN") or data_result.get("getFRN")
-        if not serial:
-            _LOGGER.error("JSON API: response missing getSRN/getFRN - not a SYR device?")
-            raise CannotConnectError
-
-        _LOGGER.debug("JSON API: Successfully validated SYR device with serial %s and %d status keys", serial, len(data_result))
-
+        await _async_validate_json_device(api)
     except SyrConnectAuthError as err:
         _LOGGER.error("JSON API: authentication failed: %s", err)
         raise InvalidAuthError from err
@@ -240,18 +274,18 @@ async def validate_input_json(hass: HomeAssistant, data: dict[str, Any]) -> dict
     _LOGGER.info("JSON API: connection successful to host: %s", host)
 
     # Return whether the device required login so the config flow can persist it
-    return {"title": f"SYR Connect Local ({host})", "login_required": api.login_required}
+    return {
+        "title": f"SYR Connect Local ({host})",
+        "login_required": api.login_required,
+    }
 
 
-class SyrConnectOptionsFlow(config_entries.OptionsFlow):
+class SyrConnectOptionsFlow(config_entries.OptionsFlowWithReload):
     """Handle options flow for SYR Connect."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize the options flow handler and store the config entry."""
-        # Avoid assigning to the read-only `config_entry` property; store privately.
-        self._config_entry = config_entry
-
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Manage the options for scan interval configuration.
 
         Args:
@@ -261,34 +295,34 @@ class SyrConnectOptionsFlow(config_entries.OptionsFlow):
             FlowResult with the configuration entry or form
         """
         if user_input is not None:
-            # Persist options (scan interval and per-device toggles)
-            entry = getattr(self, "_config_entry", None)
-            options = dict(entry.options) if entry and entry.options else {}
+            # Persist options (scan interval)
+            options = dict(self.config_entry.options)
 
             # Scan interval
-            if _SYR_CONNECT_SCAN_INTERVAL_CONF in user_input:
-                options[_SYR_CONNECT_SCAN_INTERVAL_CONF] = user_input[_SYR_CONNECT_SCAN_INTERVAL_CONF]
+            if _conelclearpro_connect_SCAN_INTERVAL_CONF in user_input:
+                options[_conelclearpro_connect_SCAN_INTERVAL_CONF] = user_input[
+                    _conelclearpro_connect_SCAN_INTERVAL_CONF
+                ]
 
             return self.async_create_entry(title="", data=options)
 
         # Compute current scan interval with centralized helper
-        entry = getattr(self, "_config_entry", None)
-        current_scan_interval = get_default_scan_interval_for_entry(entry)
+        current_scan_interval = get_default_scan_interval_for_entry(self.config_entry)
 
         # Build schema for options: scan interval only
         schema_dict: dict = {
-            vol.Optional(
-                _SYR_CONNECT_SCAN_INTERVAL_CONF,
+            probatio.Optional(
+                _conelclearpro_connect_SCAN_INTERVAL_CONF,
                 default=current_scan_interval,
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(
                     # Minimum depends on API type: JSON devices can poll faster
                     min=(
-                        _SYR_CONNECT_API_JSON_SCAN_INTERVAL_MINIMUM
-                        if (self._config_entry and self._config_entry.data.get(CONF_API_TYPE) == API_TYPE_JSON)
-                        else _SYR_CONNECT_API_XML_SCAN_INTERVAL_MINIMUM
+                        _conelclearpro_connect_API_JSON_SCAN_INTERVAL_MINIMUM
+                        if self.config_entry.data.get(CONF_API_TYPE) == API_TYPE_JSON
+                        else _conelclearpro_connect_API_XML_SCAN_INTERVAL_MINIMUM
                     ),
-                    max=_SYR_CONNECT_API_SCAN_INTERVAL_MAXIMUM,
+                    max=_conelclearpro_connect_API_SCAN_INTERVAL_MAXIMUM,
                     unit_of_measurement=UnitOfTime.SECONDS,
                     mode=selector.NumberSelectorMode.BOX,
                 ),
@@ -297,17 +331,18 @@ class SyrConnectOptionsFlow(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(schema_dict),
+            data_schema=probatio.Schema(schema_dict),
         )
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for SYR Connect."""
 
-    VERSION = 7
+    VERSION = 10
 
     @staticmethod
     @callback
+    @override
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> SyrConnectOptionsFlow:
@@ -319,7 +354,69 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         Returns:
             The options flow handler instance
         """
-        return SyrConnectOptionsFlow(config_entry)
+        return SyrConnectOptionsFlow()
+
+    @staticmethod
+    def _entry_unique_id(api_type: str, data: dict[str, Any]) -> str:
+        """Return the config entry unique_id for the given connection data.
+
+        See build_entry_unique_id; the migration to version 10 uses the same rule.
+        """
+        return build_entry_unique_id(api_type, data)
+
+    @staticmethod
+    def _strip_host(user_input: dict[str, Any]) -> dict[str, Any]:
+        """Return the user input with leading/trailing whitespace removed from the host.
+
+        Such whitespace usually comes from copy & paste; it is removed instead of
+        rejecting the host, and the cleaned host is what gets validated and saved
+        (also in the unique_id). Input without a host field is returned unchanged.
+        """
+        host = user_input.get(CONF_HOST)
+        if isinstance(host, str):
+            return {**user_input, CONF_HOST: host.strip()}
+        return user_input
+
+    def _unique_id_used_by_other_entry(
+        self, entry: ConfigEntry, unique_id: str
+    ) -> bool:
+        """Return True if another config entry already uses this unique_id.
+
+        Reauth and reconfigure may change the username or host. Without this check
+        two entries could poll the same account or device.
+        """
+        return any(
+            other.entry_id != entry.entry_id and other.unique_id == unique_id
+            for other in self._async_current_entries(include_ignore=False)
+        )
+
+    @callback
+    def _async_update_reload_and_abort(
+        self,
+        entry: ConfigEntry,
+        api_type: str,
+        new_data: dict[str, Any],
+    ) -> ConfigFlowResult:
+        """Save the new connection data of an existing entry, reload it and finish the flow.
+
+        Shared by reauth and reconfigure. A changed username/host also changes the entry's
+        unique_id (e.g. a new e-mail address of the same SYR account, or a new device IP);
+        the flow aborts with "already_configured" if another entry already uses it.
+
+        Args:
+            entry: The config entry to update
+            api_type: API type of the entry
+            new_data: Complete new entry data
+
+        Returns:
+            The abort result that ends the flow
+        """
+        new_unique_id = self._entry_unique_id(api_type, new_data)
+        if self._unique_id_used_by_other_entry(entry, new_unique_id):
+            return self.async_abort(reason="already_configured")
+        return self.async_update_reload_and_abort(
+            entry, data=new_data, unique_id=new_unique_id
+        )
 
     async def async_step_reauth(self, _entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Handle reauth flow when credentials are invalid.
@@ -332,7 +429,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """
         return await self.async_step_reauth_confirm()
 
-    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle reauth confirmation step.
 
         Args:
@@ -342,19 +441,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             FlowResult with updated config entry or form with errors
         """
         errors: dict[str, str] = {}
-
-        # Get the existing config entry for API type determination
-        entry_id = self.context.get("entry_id")
-        entry = self.hass.config_entries.async_get_entry(entry_id) if entry_id is not None else None
-        if entry is None and user_input is not None:
-            return self.async_abort(reason="reauth_failed")
+        entry = self._get_reauth_entry()
 
         # Determine API type for this entry (default to XML for backward compatibility)
-        api_type = entry.data.get(CONF_API_TYPE, API_TYPE_XML) if entry else API_TYPE_XML
+        api_type = entry.data.get(CONF_API_TYPE, API_TYPE_XML)
 
         if user_input is not None:
-            # At this point, if we reached here after the check above, `entry` must not be None
-            assert entry is not None
+            user_input = self._strip_host(user_input)
             try:
                 # Validate and update based on API type
                 if api_type == API_TYPE_JSON:
@@ -370,62 +463,79 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if "login_required" in info and info["login_required"] is not None:
                         new_data[CONF_LOGIN_REQUIRED] = bool(info["login_required"])
 
-                    # Update entry
-                    self.hass.config_entries.async_update_entry(entry, data=new_data)
-
                 else:
                     # Default/XML flow — pass existing conf_service so the correct endpoint is tested
-                    await validate_input_xml(self.hass, {
-                        **user_input,
-                        CONF_SERVICE: entry.data.get(CONF_SERVICE),
-                    })
+                    await validate_input_xml(
+                        self.hass,
+                        {
+                            **user_input,
+                            CONF_SERVICE: entry.data.get(CONF_SERVICE),
+                        },
+                    )
                     new_data = {
                         **entry.data,
                         CONF_API_TYPE: API_TYPE_XML,
                         CONF_USERNAME: user_input[CONF_USERNAME],
                         CONF_PASSWORD: user_input[CONF_PASSWORD],
                     }
-                    self.hass.config_entries.async_update_entry(entry, data=new_data)
 
-                # Reload the config entry
-                await self.hass.config_entries.async_reload(entry.entry_id)
-
-                return self.async_abort(reason="reauth_successful")
+                return self._async_update_reload_and_abort(entry, api_type, new_data)
 
             except CannotConnectError:
-                errors["base"] = "cannot_connect_local" if api_type == API_TYPE_JSON else "cannot_connect"
+                errors["base"] = (
+                    "cannot_connect_local"
+                    if api_type == API_TYPE_JSON
+                    else "cannot_connect"
+                )
             except InvalidAuthError:
                 errors["base"] = "invalid_auth"
-            except HomeAssistantError as err:
-                # Host validation errors for JSON
-                if api_type == API_TYPE_JSON:
-                    if "port" in str(err).lower():
-                        errors[CONF_HOST] = "host_no_port"
-                    else:
-                        errors[CONF_HOST] = "host_invalid"
-                else:
-                    errors["base"] = "unknown"
-            except Exception as err:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected error during reauth: %s", err)
+            except HostWithPortError:
+                errors[CONF_HOST] = "host_no_port"
+            except HostInvalidError:
+                errors[CONF_HOST] = "host_invalid"
+            except Exception:
+                _LOGGER.exception("Unexpected error during reauth")
                 errors["base"] = "unknown"
 
-        # Show appropriate form based on API type
+        # A local entry has no credentials: its own step asks for model and host
         if api_type == API_TYPE_JSON:
             return self.async_show_form(
-                step_id="reauth_confirm",
+                step_id="reauth_confirm_local",
                 data_schema=STEP_LOCAL_JSON_DATA_SCHEMA,
                 errors=errors,
-                description_placeholders={"host": str(entry.data.get(CONF_HOST, "")) if entry else ""},
+                description_placeholders={
+                    "host": str(entry.data.get(CONF_HOST, "")),
+                },
             )
 
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=_STEP_REAUTH_XML_DATA_SCHEMA,
             errors=errors,
-            description_placeholders={"username": str(self.context.get("username", ""))},
+            description_placeholders={
+                "username": str(entry.data.get(CONF_USERNAME, "")),
+            },
         )
 
-    async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_reauth_confirm_local(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle the reauth form of a local (JSON API) entry.
+
+        The form has its own step for its own texts; the input is handled by
+        `async_step_reauth_confirm` like the cloud credentials.
+
+        Args:
+            user_input: User input data with model and host
+
+        Returns:
+            FlowResult with updated config entry or form with errors
+        """
+        return await self.async_step_reauth_confirm(user_input)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle reconfiguration of the integration.
 
         Args:
@@ -435,32 +545,33 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             FlowResult with updated config entry or form with errors
         """
         errors: dict[str, str] = {}
-        entry_id = self.context.get("entry_id")
-        entry = self.hass.config_entries.async_get_entry(entry_id) if entry_id is not None else None
+        entry = self._get_reconfigure_entry()
+        api_type = entry.data.get(CONF_API_TYPE, API_TYPE_XML)
 
         if user_input is not None:
-            # Check if entry still exists during submission
-            if entry is None:
-                return self.async_abort(reason="reconfigure_failed")
-
-            # `entry` is guaranteed to be non-None beyond this point
-            assert entry is not None
+            user_input = self._strip_host(user_input)
             try:
-                # Determine API type from current entry
-                api_type = entry.data.get(CONF_API_TYPE, API_TYPE_XML)
-
                 # Validate based on API type
                 if api_type == API_TYPE_JSON:
-                    await validate_input_json(self.hass, user_input)
+                    info = await validate_input_json(self.hass, user_input)
                     new_data = {
                         CONF_API_TYPE: API_TYPE_JSON,
                         CONF_HOST: user_input[CONF_HOST],
                         CONF_MODEL: user_input[CONF_MODEL],
                     }
+                    # Whether the device needs the ADM login (/set/ADM/(2)f) before
+                    # /get/all returns data. validate_input_json found it out while
+                    # checking the device; storing it saves the client from trying
+                    # the login again at every start. The value of the old data is
+                    # not kept: the new host may be another device.
+                    if info.get("login_required") is not None:
+                        new_data[CONF_LOGIN_REQUIRED] = bool(info["login_required"])
                 else:
                     # Use the existing configured service; do not allow changing it here.
                     service = entry.data.get(CONF_SERVICE)
-                    await validate_input_xml(self.hass, {**user_input, CONF_SERVICE: service})
+                    await validate_input_xml(
+                        self.hass, {**user_input, CONF_SERVICE: service}
+                    )
                     new_data = {
                         CONF_API_TYPE: API_TYPE_XML,
                         CONF_SERVICE: service,
@@ -468,42 +579,34 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_PASSWORD: user_input[CONF_PASSWORD],
                     }
 
-                # Update the config entry
-                self.hass.config_entries.async_update_entry(entry, data=new_data)
-
-                # Reload the config entry
-                await self.hass.config_entries.async_reload(entry.entry_id)
-
-                return self.async_abort(reason="reconfigure_successful")
+                return self._async_update_reload_and_abort(entry, api_type, new_data)
 
             except CannotConnectError:
-                # Use appropriate error message based on API type
-                api_type = entry.data.get(CONF_API_TYPE, API_TYPE_XML) if entry else API_TYPE_XML
-                errors["base"] = "cannot_connect_local" if api_type == API_TYPE_JSON else "cannot_connect"
+                errors["base"] = (
+                    "cannot_connect_local"
+                    if api_type == API_TYPE_JSON
+                    else "cannot_connect"
+                )
             except InvalidAuthError:
                 errors["base"] = "invalid_auth"
-            except HomeAssistantError as err:
-                if "port" in str(err).lower():
-                    errors[CONF_HOST] = "host_no_port"
-                else:
-                    errors[CONF_HOST] = "host_invalid"
-            except Exception as err:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected error during reconfiguration: %s", err)
+            except HostWithPortError:
+                errors[CONF_HOST] = "host_no_port"
+            except HostInvalidError:
+                errors[CONF_HOST] = "host_invalid"
+            except Exception:
+                _LOGGER.exception("Unexpected error during reconfiguration")
                 errors["base"] = "unknown"
-
-        # Determine API type from entry (or default to XML if entry is None)
-        api_type = entry.data.get(CONF_API_TYPE, API_TYPE_XML) if entry else API_TYPE_XML
 
         # Show appropriate form based on API type
         if api_type == API_TYPE_JSON:
-            # Pre-fill with current values for JSON API (or empty if entry is None)
+            # Pre-fill with current values for JSON API
             return self.async_show_form(
                 step_id="reconfigure",
-                data_schema=vol.Schema(
+                data_schema=probatio.Schema(
                     {
-                        vol.Required(
+                        probatio.Required(
                             CONF_MODEL,
-                            default=entry.data.get(CONF_MODEL, "") if entry else ""
+                            default=entry.data.get(CONF_MODEL, ""),
                         ): selector.SelectSelector(
                             selector.SelectSelectorConfig(
                                 options=[
@@ -513,32 +616,34 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 mode=selector.SelectSelectorMode.DROPDOWN,
                             )
                         ),
-                        vol.Required(
+                        probatio.Required(
                             CONF_HOST,
-                            default=entry.data.get(CONF_HOST, "") if entry else ""
+                            default=entry.data.get(CONF_HOST, ""),
                         ): str,
                     }
                 ),
                 errors=errors,
             )
-        else:
-            # Pre-fill with current values for XML API (or defaults if entry is None)
-            # Do not allow changing the configured service here; only credentials may be updated.
-            return self.async_show_form(
-                step_id="reconfigure",
-                data_schema=vol.Schema(
-                    {
-                        vol.Required(
-                            CONF_USERNAME,
-                            default=entry.data.get(CONF_USERNAME, "") if entry else ""
-                        ): str,
-                        vol.Required(CONF_PASSWORD): str,
-                    }
-                ),
-                errors=errors,
-            )
+        # Pre-fill with current values for XML API
+        # Do not allow changing the configured service here; only credentials may be updated.
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_USERNAME,
+                        default=entry.data.get(CONF_USERNAME, ""),
+                    ): str,
+                    probatio.Required(CONF_PASSWORD): str,
+                }
+            ),
+            errors=errors,
+        )
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    @override
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle the initial step - show menu to select API type.
 
         Returns:
@@ -549,7 +654,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             menu_options=["api_xml", "api_json"],
         )
 
-    async def async_step_api_xml(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_api_xml(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle Cloud/XML API configuration (username + password).
 
         Args:
@@ -561,7 +668,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            _LOGGER.debug("Processing Cloud/XML API config flow for user: %s", user_input[CONF_USERNAME])
+            _LOGGER.debug(
+                "Processing Cloud/XML API config flow for user: %s",
+                user_input[CONF_USERNAME],
+            )
             try:
                 info = await validate_input_xml(self.hass, user_input)
                 _LOGGER.debug("Validation successful")
@@ -569,17 +679,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             except InvalidAuthError:
                 errors["base"] = "invalid_auth"
-            except Exception as err:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected error during Cloud/XML API config flow: %s", err)
+            except Exception:
+                _LOGGER.exception("Unexpected error during Cloud/XML API config flow")
                 errors["base"] = "unknown"
             else:
                 # Set unique ID based on username and API type
-                unique_id = f"{API_TYPE_XML}_{user_input[CONF_USERNAME]}"
+                unique_id = self._entry_unique_id(API_TYPE_XML, user_input)
                 _LOGGER.debug("Setting unique ID: %s", unique_id)
                 await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()
 
-                _LOGGER.info("Creating Cloud/XML API config entry: %s", info["title"])
+                _LOGGER.debug("Creating Cloud/XML API config entry: %s", info["title"])
                 return self.async_create_entry(
                     title=info["title"],
                     data={
@@ -596,7 +706,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_api_json(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_api_json(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle Local/JSON API configuration (host + model).
 
         Args:
@@ -608,6 +720,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            user_input = self._strip_host(user_input)
             _LOGGER.debug(
                 "Processing Local/JSON API config flow for host: %s, model: %s",
                 user_input[CONF_HOST],
@@ -620,19 +733,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_auth"
             except CannotConnectError:
                 errors["base"] = "cannot_connect_local"
+            except HostWithPortError:
+                errors[CONF_HOST] = "host_no_port"
             except HostInvalidError:
                 errors[CONF_HOST] = "host_invalid"
-            except HomeAssistantError as err:
-                if "port" in str(err).lower():
-                    errors[CONF_HOST] = "host_no_port"
-                else:
-                    errors["base"] = "unknown"
-            except Exception as err:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected error during Local/JSON API config flow: %s", err)
+            except Exception:
+                _LOGGER.exception("Unexpected error during Local/JSON API config flow")
                 errors["base"] = "unknown"
             else:
                 # Set unique ID based on host and API type
-                unique_id = f"{API_TYPE_JSON}_{user_input[CONF_HOST]}"
+                unique_id = self._entry_unique_id(API_TYPE_JSON, user_input)
                 _LOGGER.debug("Setting unique ID: %s", unique_id)
                 await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()

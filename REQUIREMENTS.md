@@ -2,8 +2,8 @@
 
 ## Home Assistant Requirements
 
-- **Home Assistant Version**: 2024.1.0 or higher (recommended: latest stable)
-- **Python Version**: 3.11 or higher (included in Home Assistant)
+- **Home Assistant Version**: 2026.10.0 or higher (recommended: latest stable)
+- **Python Version**: 3.14 or higher (included in Home Assistant)
 
 ## Development Requirements
 
@@ -22,14 +22,14 @@ pytest tests/
 Run tests with coverage:
 
 ```bash
-pytest --cov=custom_components.syr_connect --cov-report=term-missing tests/
+pytest --cov=custom_components.conelclearpro_connect --cov-report=term-missing tests/
 ```
 
 ### Development Emulator
 
 For testing without a real SYR device, use the **SYR Connect Emulator**:
 
-**Repository**: <https://github.com/alexhass/syr_connect_emulator>
+**Repository**: <https://github.com/alexhass/conelclearpro_connect_emulator>
 
 The emulator provides:
 
@@ -43,11 +43,11 @@ To use the emulator and install to Apache:
 1. Clone the emulator:
 
    ```bash
-   git clone https://github.com/alexhass/syr_connect_emulator.git
+   git clone https://github.com/alexhass/conelclearpro_connect_emulator.git
    ```
 
 2. Configure the integration to use your webservers hostname or IP as the device host
-3. Select "Local Access" mode when adding the integration hub
+3. Select "Local" when adding the integration hub
 
 The emulator responds to all standard API calls and allows testing features without accessing real devices.
 
@@ -106,7 +106,7 @@ After installing the integration in Home Assistant:
 
 **Solution**:
 
-1. Verify the folder structure is correct: `config/custom_components/syr_connect/`
+1. Verify the folder structure is correct: `config/custom_components/conelclearpro_connect/`
 2. Check that all required files are present
 3. Restart Home Assistant
 4. Check logs for any Python syntax errors
@@ -129,7 +129,7 @@ pip install "pycryptodomex>=3.19.0,<4.0" "defusedxml>=0.7.1,<1.0"
 ```txt
 config/
 └── custom_components/
-   └── syr_connect/
+   └── conelclearpro_connect/
       ├── __init__.py
       ├── manifest.json
       ├── config_flow.py
@@ -153,10 +153,11 @@ config/
       ├── payload_builder.py
       ├── repairs.py
       ├── response_parser.py
-      ├── icon.png
-      ├── icon@2x.png
-      ├── logo.png
-      ├── logo@2x.png
+      ├── brand/
+      │  ├── icon.png
+      │  ├── icon@2x.png
+      │  ├── logo.png
+      │  └── logo@2x.png
       └── translations/
          ├── de.json
          ├── en.json

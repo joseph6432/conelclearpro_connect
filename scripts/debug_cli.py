@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Debug script for tracing the XML API.
+r"""Debug script for tracing the XML API.
 
 Usage:
     python scripts/debug_cli.py --username <email> --password <pw> [options]
@@ -9,7 +9,8 @@ Options:
     --password PASSWORD         API account password
     --base-url URL              API base URL (default: https://syrconnect.de)
     --api-app-name STRING       App name in login XML payload (default: "SYR Connect")
-    --api-package-name STRING   Package name in app-version string (default: de.consoft.syr.connect)
+    --api-package-name STRING   Package name in app-version string; also selects the key of the login
+                                response (default: de.consoft.syr.connect)
     --user-agent STRING         HTTP User-Agent header (default: from const.py)
     --get-devices               Fetch device list for every project after login (continue running)
     --get-status                Fetch device status for every device (implies --get-devices)
@@ -17,42 +18,73 @@ Options:
     --identity DEVICE           Device identifier (id, dclg, serial_number or name) to target with --set-command
     --set-command CMD           Set command to execute (e.g. setSIR, setSV1); requires --identity and --set-value
     --set-value VALUE           Value to use with --set-command (bool/int/float/string parsed)
+    --get-statistics [METHOD]   Fetch the statistics of --identity: the series of its device profile,
+                                or METHOD with --stat-t, --stat-unit and --stat-rtyp
+    --stat-t INT                Measurement attribute t of <sh> (with --get-statistics METHOD)
+    --stat-unit STRING          Unit attribute of <sh>, e.g. "°C" (with --get-statistics METHOD)
+    --stat-rtyp INT             Report type attribute rtyp of <sh> (with --get-statistics METHOD)
     --log-file PATH             Write output additionally to this file (no file written by default)
     --show-password             Show password in log output (default: masked as "***")
     --no-decrypt                Skip decryption step; also prevents set commands from running
 
 Examples:
-
 Login and list devices:
-    python scripts/debug_cli.py \\
-        --username me@example.com \\
-        --password secret \\
+    python scripts/debug_cli.py \
+        --username me@example.com \
+        --password secret \
         --list-devices
 
 Execute a single set command (one-shot):
-    python scripts/debug_cli.py \\
-        --username me@example.com \\
-        --password secret \\
-        --identity 1234567890 \\
-        --set-command setSV1 \\
+    python scripts/debug_cli.py \
+        --username me@example.com \
+        --password secret \
+        --identity 1234567890 \
+        --set-command setSV1 \
         --set-value 10
 
+Fetch the statistics series of a device profile (e.g. SafeFloor):
+    python scripts/debug_cli.py \
+        --username me@example.com \
+        --password secret \
+        --identity 1234567890 \
+        --get-statistics
+
+Try a statistics method with own request attributes (SafeFloor temperature):
+    python scripts/debug_cli.py \
+        --username me@example.com \
+        --password secret \
+        --identity 1234567890 \
+        --get-statistics GetSafeFloorStatistics \
+        --stat-t 1 \
+        --stat-unit "°C" \
+        --stat-rtyp 4
+
+Try a statistics method with own request attributes (SafeFloor humidity):
+    python scripts/debug_cli.py \
+        --username me@example.com \
+        --password secret \
+        --identity 1234567890 \
+        --get-statistics GetSafeFloorStatistics \
+        --stat-t 2 \
+        --stat-unit "%" \
+        --stat-rtyp 4
+
 Example (CLEAR PRO):
-    python scripts/debug_cli.py \\
-        --username me@example.com \\
-        --password secret \\
-        --base-url https://api.conelclearpro.de \\
-        --api-app-name "CLEAR PRO" \\
+    python scripts/debug_cli.py \
+        --username me@example.com \
+        --password secret \
+        --base-url https://api.conelclearpro.de \
+        --api-app-name "CLEAR PRO" \
         --api-package-name de.consoft.gc.conel.connect
 """
-from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
-import sys
 from pathlib import Path
-from typing import Any
+import sys
+from typing import Any, NoReturn
+from xml.etree import ElementTree as ET
 
 # ---------------------------------------------------------------------------
 # Make the custom_components package importable when running from repo root
@@ -60,30 +92,74 @@ from typing import Any
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-import aiohttp  # noqa: E402  (after sys.path manipulation)
 
-from custom_components.syr_connect.checksum import SyrChecksum  # noqa: E402
-from custom_components.syr_connect.const import (  # noqa: E402
-    _SYR_CONNECT_CLIENT_CF_BUNDLE_IDENTIFIER,
-    _SYR_CONNECT_CLIENT_CF_BUNDLE_VERSION,
-    _SYR_CONNECT_CLIENT_CHECKSUM_KEY1,
-    _SYR_CONNECT_CLIENT_CHECKSUM_KEY2,
-    _SYR_CONNECT_CLIENT_ENCRYPTION_IV,
-    _SYR_CONNECT_CLIENT_ENCRYPTION_KEY,
-    _SYR_CONNECT_CLIENT_OS_LANGUAGE,
-    _SYR_CONNECT_CLIENT_OS_MODEL,
-    _SYR_CONNECT_CLIENT_OS_NAME,
-    _SYR_CONNECT_CLIENT_OS_VERSION,
-    _SYR_CONNECT_CLIENT_USER_AGENT,
-)
-from custom_components.syr_connect.encryption import SyrEncryption  # noqa: E402
-from custom_components.syr_connect.http_client import HTTPClient  # noqa: E402
-from custom_components.syr_connect.payload_builder import PayloadBuilder  # noqa: E402
-from custom_components.syr_connect.response_parser import ResponseParser  # noqa: E402
+def _exit_missing_dependency(err: ModuleNotFoundError) -> NoReturn:
+    """Explain how to run the script with the project's virtualenv, then exit."""
+    if sys.platform == "win32":
+        venv_python = _REPO_ROOT / ".venv" / "Scripts" / "python.exe"
+        activate = (
+            r".venv\Scripts\activate.bat  (PowerShell: .venv\Scripts\Activate.ps1)"
+        )
+    else:
+        venv_python = _REPO_ROOT / ".venv" / "bin" / "python"
+        activate = "source .venv/bin/activate"
+    lines = [
+        f"Error: the Python module '{err.name}' is not installed for this interpreter:",
+        f"    {sys.executable}",
+        "",
+    ]
+    if venv_python.exists():
+        lines += [
+            "Run the script with the project's virtualenv:",
+            f"    {venv_python} {Path(__file__).resolve()} --username ... --password ...",
+            "",
+            f"or activate it first (from {_REPO_ROOT}):",
+            f"    {activate}",
+            "    python scripts/debug_cli.py --username ... --password ...",
+        ]
+    else:
+        lines += [
+            f"Create the project's virtualenv and install the dependencies (from {_REPO_ROOT}):",
+            "    python -m venv .venv",
+            f"    {activate}",
+            "    pip install -r requirements-dev.txt",
+        ]
+    print("\n".join(lines), file=sys.stderr)
+    sys.exit(1)
+
+
+try:
+    import aiohttp
+    import defusedxml.ElementTree as DefusedET
+
+    from custom_components.conelclearpro_connect.checksum import SyrChecksum
+    from custom_components.conelclearpro_connect.const import (
+        _conelclearpro_connect_API_SERVICES,
+        _conelclearpro_connect_API_XML_DEVICE_SERVICE_PATH,
+        _conelclearpro_connect_CLIENT_CF_BUNDLE_VERSION,
+        _conelclearpro_connect_CLIENT_CHECKSUM_KEY1,
+        _conelclearpro_connect_CLIENT_CHECKSUM_KEY2,
+        _conelclearpro_connect_CLIENT_OS_LANGUAGE,
+        _conelclearpro_connect_CLIENT_OS_MODEL,
+        _conelclearpro_connect_CLIENT_OS_NAME,
+        _conelclearpro_connect_CLIENT_OS_VERSION,
+        _conelclearpro_connect_CLIENT_USER_AGENT,
+        _conelclearpro_connect_DEFAULT_CF_BUNDLE_IDENTIFIER,
+    )
+    from custom_components.conelclearpro_connect.data import SyrConnectDevice
+    from custom_components.conelclearpro_connect.devices import SyrConnectStatistic
+    from custom_components.conelclearpro_connect.encryption import SyrEncryption
+    from custom_components.conelclearpro_connect.http_client import HTTPClient
+    from custom_components.conelclearpro_connect.models import detect_model
+    from custom_components.conelclearpro_connect.payload_builder import PayloadBuilder
+    from custom_components.conelclearpro_connect.response_parser import ResponseParser
+except ModuleNotFoundError as err:
+    _exit_missing_dependency(err)
 
 # ---------------------------------------------------------------------------
 # Logging setup -- maximum verbosity on every relevant logger
 # ---------------------------------------------------------------------------
+
 
 def _setup_logging(log_file: str | None = None) -> None:
     fmt = "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"
@@ -102,14 +178,14 @@ def _setup_logging(log_file: str | None = None) -> None:
         root.addHandler(file_handler)
         print(f"Logging to: {Path(log_file).resolve()}", flush=True)
 
-    # Enable DEBUG on every syr_connect sub-module
+    # Enable DEBUG on every conelclearpro_connect sub-module
     for name in [
-        "custom_components.syr_connect.api_xml",
-        "custom_components.syr_connect.http_client",
-        "custom_components.syr_connect.payload_builder",
-        "custom_components.syr_connect.response_parser",
-        "custom_components.syr_connect.encryption",
-        "custom_components.syr_connect.checksum",
+        "custom_components.conelclearpro_connect.api_xml",
+        "custom_components.conelclearpro_connect.http_client",
+        "custom_components.conelclearpro_connect.payload_builder",
+        "custom_components.conelclearpro_connect.response_parser",
+        "custom_components.conelclearpro_connect.encryption",
+        "custom_components.conelclearpro_connect.checksum",
     ]:
         logging.getLogger(name).setLevel(logging.DEBUG)
 
@@ -118,12 +194,26 @@ def _setup_logging(log_file: str | None = None) -> None:
     logging.getLogger("aiohttp.client").setLevel(logging.DEBUG)
 
 
-_LOG = logging.getLogger("debug_cli")
+_LOGGER = logging.getLogger("debug_cli")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _mask_login_password(xml_data: str) -> str:
+    """Return a login payload with the password replaced by "***".
+
+    The payload is parsed instead of searched: the XML escapes & < > and ", so the
+    plain password is not always found in it.
+    """
+    declaration = xml_data[: xml_data.index("?>") + 2]
+    root = DefusedET.fromstring(xml_data)
+    for usr in root.iter("usr"):
+        usr.set("v", "***")
+    return declaration + ET.tostring(root, encoding="unicode")
+
 
 def _parse_set_value(raw: str) -> Any:
     """Parse a CLI --set-value string into the most appropriate Python type.
@@ -148,6 +238,7 @@ def _parse_set_value(raw: str) -> Any:
 # Inline API client that accepts custom URLs and constants
 # ---------------------------------------------------------------------------
 
+
 class DebugXmlClient:
     """Stripped-down XML API client with configurable endpoints for debugging."""
 
@@ -160,68 +251,77 @@ class DebugXmlClient:
         base_url: str,
         app_version: str,
         app_name: str,
-        api_package_name: str,  # embedded in app_version by caller; accepted here only for logging
+        api_package_name: str,  # embedded in app_version by caller; selects the service key
         user_agent: str,
         skip_decrypt: bool = False,
         show_password: bool = False,
     ) -> None:
+        """Initialize the client with the endpoints and client constants to use."""
         self.username = username
         self.password = password
         self.skip_decrypt = skip_decrypt
         self.show_password = show_password
 
         # Derived URLs -- same path segments as production, keyed by operation
-        self.login_url = f"{base_url}/WebServices/Api/SyrApiService.svc/REST/GetProjects"
+        self.login_url = (
+            f"{base_url}/WebServices/Api/SyrApiService.svc/REST/GetProjects"
+        )
         self.device_list_url = f"{base_url}/WebServices/SyrControlWebServiceTest2.asmx/GetProjectDeviceCollections"
         self.device_status_url = f"{base_url}/WebServices/SyrControlWebServiceTest2.asmx/GetDeviceCollectionStatus"
         self.device_set_url = f"{base_url}/WebServices/SyrControlWebServiceTest2.asmx/SetDeviceCollectionStatus"
+        # The statistics method of the device family is appended (get_statistics)
+        self.device_service_url = (
+            f"{base_url}/{_conelclearpro_connect_API_XML_DEVICE_SERVICE_PATH}"
+        )
 
         self.session_data: str = ""
         self.projects: list[dict[str, Any]] = []
 
-        self.encryption = SyrEncryption(
-            _SYR_CONNECT_CLIENT_ENCRYPTION_KEY,
-            _SYR_CONNECT_CLIENT_ENCRYPTION_IV,
+        # Key and IV of the service of the package name, SYR Connect if unknown
+        svc = _conelclearpro_connect_API_SERVICES.get(
+            api_package_name,
+            _conelclearpro_connect_API_SERVICES[_conelclearpro_connect_DEFAULT_CF_BUNDLE_IDENTIFIER],
         )
+        self.encryption = SyrEncryption(svc.crypt_key, svc.crypt_vector)
         checksum = SyrChecksum(
-            _SYR_CONNECT_CLIENT_CHECKSUM_KEY1,
-            _SYR_CONNECT_CLIENT_CHECKSUM_KEY2,
+            _conelclearpro_connect_CLIENT_CHECKSUM_KEY1,
+            _conelclearpro_connect_CLIENT_CHECKSUM_KEY2,
         )
         self.payload_builder = PayloadBuilder(app_version, checksum, app_name)
         self.response_parser = ResponseParser()
         # Disable retrying for debug runs to surface errors immediately
-        self.http_client = HTTPClient(session, user_agent, max_retries=1)
+        self.http_client = HTTPClient(session, user_agent)
 
         # Log after all objects are constructed so a constructor failure doesn't
         # leave a misleading "=== Endpoint configuration ===" banner in the log.
-        _LOG.info("=== Endpoint configuration ===")
-        _LOG.info("  base_url          : %s", base_url)
-        _LOG.info("  login_url         : %s", self.login_url)
-        _LOG.info("  device_list_url   : %s", self.device_list_url)
-        _LOG.info("  device_status_url : %s", self.device_status_url)
-        _LOG.info("  device_set_url    : %s", self.device_set_url)
-        _LOG.info("  app_version       : %s", app_version)
-        _LOG.info("  api_app_name      : %s", app_name)
-        _LOG.info("  api_package_name  : %s", api_package_name)
-        _LOG.info("  user_agent        : %s", user_agent)
+        _LOGGER.info("=== Endpoint configuration ===")
+        _LOGGER.info("  base_url          : %s", base_url)
+        _LOGGER.info("  login_url         : %s", self.login_url)
+        _LOGGER.info("  device_list_url   : %s", self.device_list_url)
+        _LOGGER.info("  device_status_url : %s", self.device_status_url)
+        _LOGGER.info("  device_set_url    : %s", self.device_set_url)
+        _LOGGER.info("  device_service_url: %s", self.device_service_url)
+        _LOGGER.info("  app_version       : %s", app_version)
+        _LOGGER.info("  api_app_name      : %s", app_name)
+        _LOGGER.info("  api_package_name  : %s", api_package_name)
+        _LOGGER.info("  user_agent        : %s", user_agent)
 
     # ------------------------------------------------------------------
     # Login
     # ------------------------------------------------------------------
 
     async def login(self) -> bool:
-        _LOG.info("=== LOGIN ===")
-        _LOG.info("Username: %s", self.username)
+        """Log in and store the session token and the projects."""
+        _LOGGER.info("=== LOGIN ===")
+        _LOGGER.info("Username: %s", self.username)
 
-        xml_data = self.payload_builder.build_login_payload(self.username, self.password)
-        # Guard against replace("", ...) corrupting the XML when password is empty
-        if self.show_password or not self.password:
-            log_payload = xml_data
-        else:
-            log_payload = xml_data.replace(self.password, "***")
-        _LOG.debug("--- Login request payload ---\n%s", log_payload)
+        xml_data = self.payload_builder.build_login_payload(
+            self.username, self.password
+        )
+        log_payload = xml_data if self.show_password else _mask_login_password(xml_data)
+        _LOGGER.debug("--- Login request payload ---\n%s", log_payload)
 
-        _LOG.info("POST %s", self.login_url)
+        _LOGGER.info("POST %s", self.login_url)
         try:
             raw_response = await self.http_client.post(
                 self.login_url,
@@ -229,37 +329,50 @@ class DebugXmlClient:
                 content_type="text/xml",
             )
         except aiohttp.ClientResponseError as exc:
-            _LOG.error(
+            _LOGGER.error(
                 "HTTP %s %s\n  URL : %s\n  Hint: check --base-url",
-                exc.status, exc.message, exc.request_info.url,
+                exc.status,
+                exc.message,
+                exc.request_info.url,
             )
-            _LOG.debug("Full HTTP error details", exc_info=True)
+            _LOGGER.debug("Full HTTP error details", exc_info=True)
             raise
         except aiohttp.ClientError as exc:
-            _LOG.error("Connection error: %s\n  Hint: check --base-url and network", exc)
-            _LOG.debug("Full connection error details", exc_info=True)
+            _LOGGER.error(
+                "Connection error: %s\n  Hint: check --base-url and network", exc
+            )
+            _LOGGER.debug("Full connection error details", exc_info=True)
             raise
 
-        _LOG.debug("--- Raw login response ---\n%s", raw_response)
+        _LOGGER.debug("--- Raw login response ---\n%s", raw_response)
         if self.skip_decrypt:
-            _LOG.warning("--no-decrypt flag set -- skipping decryption, cannot extract session.")
+            _LOGGER.warning(
+                "--no-decrypt flag set -- skipping decryption, cannot extract session."
+            )
             return False
 
-        _LOG.info("Parsing login response ...")
-        encrypted_text, raw_parsed = self.response_parser.parse_login_response(raw_response)
-        _LOG.debug("Encrypted session text length: %d chars", len(encrypted_text))
-        _LOG.debug("parse_login_response extras: %s", raw_parsed)
+        _LOGGER.info("Parsing login response ...")
+        encrypted_text, raw_parsed = self.response_parser.parse_login_response(
+            raw_response
+        )
+        _LOGGER.debug("Encrypted session text length: %d chars", len(encrypted_text))
+        _LOGGER.debug("parse_login_response extras: %s", raw_parsed)
 
-        _LOG.info("Decrypting session data ...")
+        _LOGGER.info("Decrypting session data ...")
         decrypted = self.encryption.decrypt(encrypted_text)
-        _LOG.debug("--- Decrypted session payload ---\n%s", decrypted)
+        _LOGGER.debug("--- Decrypted session payload ---\n%s", decrypted)
 
-        _LOG.info("Parsing decrypted session ...")
-        self.session_data, self.projects = self.response_parser.parse_decrypted_login(decrypted)
-        _LOG.info("Session token (first 20 chars): %s...", self.session_data[:20])
-        _LOG.info("Projects found: %d", len(self.projects))
+        if not self.response_parser.is_login_successful(raw_parsed):
+            self.response_parser.raise_login_rejected(decrypted)
+
+        _LOGGER.info("Parsing decrypted session ...")
+        self.session_data, self.projects = self.response_parser.parse_decrypted_login(
+            decrypted
+        )
+        _LOGGER.info("Session token (first 20 chars): %s...", self.session_data[:20])
+        _LOGGER.info("Projects found: %d", len(self.projects))
         for p in self.projects:
-            _LOG.info("  Project: id=%s  name=%s", p.get("id"), p.get("name"))
+            _LOGGER.info("  Project: id=%s  name=%s", p.get("id"), p.get("name"))
 
         return True
 
@@ -278,49 +391,57 @@ class DebugXmlClient:
         Returns:
             True on success
         """
-        _LOG.info("Setting %s on device %s to %r", command, device_id, value)
+        _LOGGER.info("Setting %s on device %s to %r", command, device_id, value)
 
         if self.skip_decrypt:
-            _LOG.warning("--no-decrypt flag set -- cannot perform set operation without a valid session.")
+            _LOGGER.warning(
+                "--no-decrypt flag set -- cannot perform set operation without a valid session."
+            )
             return False
 
-        payload = self.payload_builder.build_device_set_status_payload(self.session_data, device_id, [(command, value)])
+        payload = self.payload_builder.build_device_set_status_payload(
+            self.session_data, device_id, [(command, value)]
+        )
         try:
             resp = await self.http_client.post(self.device_set_url, {"xml": payload})
-            _LOG.debug("Set response: %s", resp)
-            _LOG.info("Set command completed for %s", device_id)
-            return True
+            _LOGGER.debug("Set response: %s", resp)
+            _LOGGER.info("Set command completed for %s", device_id)
         except Exception as exc:
-            _LOG.error("Set command failed: %s", exc)
-            _LOG.debug("Set command traceback", exc_info=True)
+            _LOGGER.error("Set command failed: %s", exc)
+            _LOGGER.debug("Set command traceback", exc_info=True)
             return False
+        else:
+            return True
 
     # ------------------------------------------------------------------
     # Devices
     # ------------------------------------------------------------------
 
-    async def get_devices(self, project_id: str) -> list[dict[str, Any]]:
-        _LOG.info("=== GET DEVICES  project_id=%s ===", project_id)
+    async def get_devices(self, project_id: str) -> list[SyrConnectDevice]:
+        """Fetch and log the devices of a project."""
+        _LOGGER.info("=== GET DEVICES  project_id=%s ===", project_id)
 
-        payload = self.payload_builder.build_device_get_list_payload(self.session_data, project_id)
-        _LOG.debug("--- Device list payload ---\n%s", payload)
+        payload = self.payload_builder.build_device_get_list_payload(
+            self.session_data, project_id
+        )
+        _LOGGER.debug("--- Device list payload ---\n%s", payload)
 
-        _LOG.info("POST %s", self.device_list_url)
+        _LOGGER.info("POST %s", self.device_list_url)
         raw_response = await self.http_client.post(
             self.device_list_url,
             {"xml": payload},
         )
-        _LOG.debug("--- Raw device list response ---\n%s", raw_response)
+        _LOGGER.debug("--- Raw device list response ---\n%s", raw_response)
 
-        devices: list[dict[str, Any]] = self.response_parser.parse_device_list_response(raw_response)
+        devices: list[SyrConnectDevice] = (
+            self.response_parser.parse_device_list_response(raw_response)
+        )
         for dev in devices:
             dev["project_id"] = project_id
-            if "id" not in dev and "serial_number" in dev:
-                dev["id"] = dev["serial_number"]
 
-        _LOG.info("Devices found: %d", len(devices))
+        _LOGGER.info("Devices found: %d", len(devices))
         for dev in devices:
-            _LOG.info(
+            _LOGGER.info(
                 "  Device: id=%s  name=%s  dclg=%s  dk=%s  dkv=%s  sbt=%s",
                 dev.get("id"),
                 dev.get("name"),
@@ -335,27 +456,73 @@ class DebugXmlClient:
     # Status
     # ------------------------------------------------------------------
 
-    async def get_status(self, device: dict[str, Any]) -> dict[str, Any]:
+    async def get_status(self, device: SyrConnectDevice) -> dict[str, Any]:
+        """Fetch and log the status of a device."""
         device_id = device.get("id", "?")
         dclg = device.get("dclg", "")
 
-        _LOG.info("=== GET STATUS  device=%s  dclg=%s ===", device_id, dclg)
+        _LOGGER.info("=== GET STATUS  device=%s  dclg=%s ===", device_id, dclg)
 
-        payload = self.payload_builder.build_device_get_status_payload(self.session_data, dclg)
-        _LOG.debug("--- Status request payload ---\n%s", payload)
+        payload = self.payload_builder.build_device_get_status_payload(
+            self.session_data, dclg
+        )
+        _LOGGER.debug("--- Status request payload ---\n%s", payload)
 
-        _LOG.info("POST %s", self.device_status_url)
+        _LOGGER.info("POST %s", self.device_status_url)
         raw_response = await self.http_client.post(
             self.device_status_url,
             {"xml": payload},
         )
-        _LOG.debug("--- Raw status response (first 2000 chars) ---\n%s", raw_response[:2000])
+        _LOGGER.debug(
+            "--- Raw status response (first 2000 chars) ---\n%s", raw_response[:2000]
+        )
 
-        status: dict[str, Any] = self.response_parser.parse_device_status_response(raw_response)
-        _LOG.info("Status keys returned: %d", len(status))
+        status = self.response_parser.parse_device_status_response(raw_response)
+        if status is None:
+            # The parser drops broken or incomplete answers, like the integration does
+            _LOGGER.warning("Status response was dropped as broken or incomplete")
+            return {}
+        _LOGGER.info("Status keys returned: %d", len(status))
         for k, v in sorted(status.items()):
-            _LOG.info("  %-20s = %r", k, v)
+            _LOGGER.info("  %-20s = %r", k, v)
         return status
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
+
+    async def get_statistics(self, dclg: str, statistic: SyrConnectStatistic) -> str:
+        """Fetch and log one statistics series of a device.
+
+        Returns:
+            The raw XML response, so it can be saved as a fixture
+        """
+        _LOGGER.info(
+            "=== GET STATISTICS  dclg=%s  method=%s  t=%s  unit=%s  rtyp=%s ===",
+            dclg,
+            statistic.method,
+            statistic.t,
+            statistic.unit,
+            statistic.rtyp,
+        )
+
+        payload = self.payload_builder.build_device_get_statistics_payload(
+            self.session_data, dclg, statistic
+        )
+        _LOGGER.debug("--- Statistics request payload ---\n%s", payload)
+
+        url = self.device_service_url + statistic.method
+        _LOGGER.info("POST %s", url)
+        raw_response = await self.http_client.post(url, {"xml": payload})
+        # Logged at info level: the cloud answers every error with <msg mtid="1">, which
+        # the parser takes for a rejected session token
+        _LOGGER.info("--- Raw statistics response ---\n%s", raw_response)
+
+        measurements = self.response_parser.parse_statistics_response(raw_response)
+        _LOGGER.info("Measurements returned: %d", len(measurements))
+        for timestamp, value in measurements:
+            _LOGGER.info("  %s = %r", timestamp.isoformat(), value)
+        return raw_response
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +545,9 @@ def _parse_args() -> argparse.Namespace:
         epilog=_EXAMPLES_EPILOG,
     )
     parser.add_argument("--username", required=True, help="SYR Connect account e-mail")
-    parser.add_argument("--password", required=True, help="SYR Connect account password")
+    parser.add_argument(
+        "--password", required=True, help="SYR Connect account password"
+    )
     parser.add_argument(
         "--show-password",
         action="store_true",
@@ -391,7 +560,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--user-agent",
-        default=_SYR_CONNECT_CLIENT_USER_AGENT,
+        default=_conelclearpro_connect_CLIENT_USER_AGENT,
         help="HTTP User-Agent header (default: %(default)s)",
     )
     parser.add_argument(
@@ -401,7 +570,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--api-package-name",
-        default=_SYR_CONNECT_CLIENT_CF_BUNDLE_IDENTIFIER,
+        default=_conelclearpro_connect_DEFAULT_CF_BUNDLE_IDENTIFIER,
         help="Package name embedded in the app-version string (default: %(default)s)",
     )
     parser.add_argument(
@@ -442,37 +611,155 @@ def _parse_args() -> argparse.Namespace:
         "--set-value",
         help="Value to use with the set command (bool/int/float/string parsed automatically)",
     )
+    parser.add_argument(
+        "--get-statistics",
+        nargs="?",
+        const="",
+        metavar="METHOD",
+        help=(
+            "Fetch the statistics of --identity: without METHOD the series of its"
+            " device profile, with METHOD one request with --stat-t, --stat-unit and"
+            " --stat-rtyp"
+        ),
+    )
+    parser.add_argument(
+        "--stat-t",
+        type=int,
+        help="Measurement attribute t of <sh> (with --get-statistics METHOD)",
+    )
+    parser.add_argument(
+        "--stat-unit",
+        help='Unit attribute of <sh>, e.g. "°C" (with --get-statistics METHOD)',
+    )
+    parser.add_argument(
+        "--stat-rtyp",
+        type=int,
+        help="Report type attribute rtyp of <sh> (with --get-statistics METHOD)",
+    )
     return parser.parse_args()
 
 
-async def _collect_devices(client: DebugXmlClient) -> list[dict[str, Any]]:
+def _find_device(
+    devices: list[SyrConnectDevice], identity: str
+) -> SyrConnectDevice | None:
+    """Return the device matching id, dclg, serial number or name, logging the rest."""
+    target = next(
+        (
+            d
+            for d in devices
+            if identity
+            in (
+                d.get("id"),
+                d.get("dclg"),
+                d.get("serial_number"),
+                d.get("name"),
+            )
+        ),
+        None,
+    )
+    if target is None:
+        _LOGGER.error("Device '%s' not found. Available devices:", identity)
+        for d in devices:
+            _LOGGER.info(
+                "  id=%s  dclg=%s  name=%s  dk=%s  dkv=%s  sbt=%s",
+                d.get("id"),
+                d.get("dclg"),
+                d.get("name"),
+                d.get("dk"),
+                d.get("dkv"),
+                d.get("sbt"),
+            )
+    return target
+
+
+async def _get_statistics(client: DebugXmlClient, args: argparse.Namespace) -> None:
+    """Fetch the statistics series requested by --get-statistics, exit on bad options."""
+    attrs = (args.stat_t, args.stat_unit, args.stat_rtyp)
+    if not args.identity:
+        _LOGGER.error("--get-statistics requires --identity")
+        sys.exit(1)
+    if args.get_statistics and None in attrs:
+        _LOGGER.error(
+            "--get-statistics METHOD requires --stat-t, --stat-unit and --stat-rtyp"
+        )
+        sys.exit(1)
+    if not args.get_statistics and attrs != (None, None, None):
+        _LOGGER.error("--stat-t, --stat-unit and --stat-rtyp require a METHOD")
+        sys.exit(1)
+
+    target = _find_device(await _collect_devices(client), args.identity)
+    if target is None:
+        sys.exit(1)
+    dclg = target.get("dclg") or target.get("id")
+    if not dclg:
+        _LOGGER.error("Device %s has neither a dclg nor an id", target)
+        sys.exit(1)
+
+    if args.get_statistics:
+        statistics: tuple[SyrConnectStatistic, ...] = (
+            SyrConnectStatistic(
+                key="debug",
+                method=args.get_statistics,
+                rtyp=args.stat_rtyp,
+                t=args.stat_t,
+                unit=args.stat_unit,
+            ),
+        )
+    else:
+        # The status is needed where a device kind has several models
+        status = await client.get_status(target)
+        model = detect_model(
+            status,
+            dk=target.get("dk"),
+            dkv=target.get("dkv"),
+            sbt=target.get("sbt"),
+        )
+        profile = model.device_profile
+        statistics = profile.statistics if profile is not None else ()
+        _LOGGER.info("Detected model: %s (%s)", model.name, model.display_name)
+        if not statistics:
+            _LOGGER.error(
+                "Model %s has no statistics series; use --get-statistics METHOD",
+                model.name,
+            )
+            sys.exit(1)
+
+    for statistic in statistics:
+        try:
+            await client.get_statistics(dclg, statistic)
+        except Exception as exc:
+            _LOGGER.error("Failed to get %s statistics: %s", statistic.method, exc)
+            _LOGGER.debug("Statistics traceback", exc_info=True)
+
+
+async def _collect_devices(client: DebugXmlClient) -> list[SyrConnectDevice]:
     """Fetch devices across all projects, logging and skipping per-project failures."""
-    all_devices: list[dict[str, Any]] = []
+    all_devices: list[SyrConnectDevice] = []
     for project in client.projects:
         try:
             devices = await client.get_devices(project["id"])
             all_devices.extend(devices)
         except Exception as exc:
-            _LOG.error(
+            _LOGGER.error(
                 "Failed to get devices for project %s: %s",
                 project.get("name") or project.get("id"),
                 exc,
             )
-            _LOG.debug("Device list traceback", exc_info=True)
+            _LOGGER.debug("Device list traceback", exc_info=True)
     return all_devices
 
 
 async def _run(args: argparse.Namespace) -> None:
-    _LOG.info("Starting SYR Connect debug login script")
-    _LOG.info("Python sys.path includes: %s", _REPO_ROOT)
+    _LOGGER.info("Starting SYR Connect debug login script")
+    _LOGGER.info("Python sys.path includes: %s", _REPO_ROOT)
 
     async with aiohttp.ClientSession() as session:
         effective_app_version = (
-            f"App-{_SYR_CONNECT_CLIENT_CF_BUNDLE_VERSION}"
-            f"-{_SYR_CONNECT_CLIENT_OS_LANGUAGE}"
-            f"-{_SYR_CONNECT_CLIENT_OS_NAME}"
-            f"-{_SYR_CONNECT_CLIENT_OS_MODEL}"
-            f"-{_SYR_CONNECT_CLIENT_OS_VERSION}"
+            f"App-{_conelclearpro_connect_CLIENT_CF_BUNDLE_VERSION}"
+            f"-{_conelclearpro_connect_CLIENT_OS_LANGUAGE}"
+            f"-{_conelclearpro_connect_CLIENT_OS_NAME}"
+            f"-{_conelclearpro_connect_CLIENT_OS_MODEL}"
+            f"-{_conelclearpro_connect_CLIENT_OS_VERSION}"
             f"-{args.api_package_name}"
         )
 
@@ -492,28 +779,29 @@ async def _run(args: argparse.Namespace) -> None:
         try:
             ok = await client.login()
         except Exception as exc:
-            _LOG.error("Login failed: %s", exc)
-            _LOG.debug("Login traceback", exc_info=True)
+            _LOGGER.error("Login failed: %s", exc)
+            _LOGGER.debug("Login traceback", exc_info=True)
             sys.exit(1)
 
         if not ok:
-            _LOG.warning("Login returned False -- aborting further steps.")
+            _LOGGER.warning("Login returned False -- aborting further steps.")
             return
 
         # ------------------------------------------------------------------
         # --list-devices: print a summary and exit
         # ------------------------------------------------------------------
         if args.list_devices:
-            _LOG.info("Listing devices for all projects")
+            _LOGGER.info("Listing devices for all projects")
             for project in client.projects:
                 try:
                     devices = await client.get_devices(project["id"])
                 except Exception as exc:
-                    _LOG.error(
+                    _LOGGER.error(
                         "Failed to get devices for project %s: %s",
                         project.get("name") or project.get("id"),
                         exc,
                     )
+                    _LOGGER.debug("Device list traceback", exc_info=True)
                     continue
                 if devices:
                     print(f"Project: {project.get('name')} (id={project.get('id')})")
@@ -529,42 +817,37 @@ async def _run(args: argparse.Namespace) -> None:
         # ------------------------------------------------------------------
         if args.set_command:
             if not args.identity or args.set_value is None:
-                _LOG.error("--set-command requires --identity and --set-value")
+                _LOGGER.error("--set-command requires --identity and --set-value")
                 sys.exit(1)
 
-            all_devices = await _collect_devices(client)
-
-            target = next(
-                (
-                    d for d in all_devices
-                    if args.identity in (d.get("id"), d.get("dclg"), d.get("serial_number"), d.get("name"))
-                ),
-                None,
-            )
-
+            target = _find_device(await _collect_devices(client), args.identity)
             if not target:
-                _LOG.error("Device '%s' not found. Available devices:", args.identity)
-                for d in all_devices:
-                    _LOG.info(
-                        "  id=%s  dclg=%s  name=%s  dk=%s  dkv=%s  sbt=%s",
-                        d.get("id"),
-                        d.get("dclg"),
-                        d.get("name"),
-                        d.get("dk"),
-                        d.get("dkv"),
-                        d.get("sbt"),
-                    )
                 sys.exit(1)
 
             dclg = target.get("dclg") or target.get("id")
+            if not dclg:
+                _LOGGER.error("Device %s has neither a dclg nor an id", target)
+                sys.exit(1)
             value = _parse_set_value(args.set_value)
 
             success = await client.set_device_status(dclg, args.set_command, value)
             if success:
-                _LOG.info("Set command succeeded: %s -> %s=%r", target.get("id"), args.set_command, value)
+                _LOGGER.info(
+                    "Set command succeeded: %s -> %s=%r",
+                    target.get("id"),
+                    args.set_command,
+                    value,
+                )
                 return
-            _LOG.error("Set command failed for device %s", target.get("id"))
+            _LOGGER.error("Set command failed for device %s", target.get("id"))
             sys.exit(1)
+
+        # ------------------------------------------------------------------
+        # --get-statistics: fetch the statistics of one device and exit
+        # ------------------------------------------------------------------
+        if args.get_statistics is not None:
+            await _get_statistics(client, args)
+            return
 
         # ------------------------------------------------------------------
         # --get-devices / --get-status: fetch and optionally poll status
@@ -577,13 +860,18 @@ async def _run(args: argparse.Namespace) -> None:
                     try:
                         await client.get_status(device)
                     except Exception as exc:
-                        _LOG.error("Failed to get status for device %s: %s", device.get("id"), exc)
-                        _LOG.debug("Device status traceback", exc_info=True)
+                        _LOGGER.error(
+                            "Failed to get status for device %s: %s",
+                            device.get("id"),
+                            exc,
+                        )
+                        _LOGGER.debug("Device status traceback", exc_info=True)
 
-    _LOG.info("Done.")
+    _LOGGER.info("Done.")
 
 
 def main() -> None:
+    """Run the debug client with the command line arguments."""
     args = _parse_args()
     _setup_logging(args.log_file)
     asyncio.run(_run(args))

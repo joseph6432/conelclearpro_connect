@@ -5,22 +5,45 @@ for config entry migrations. The helpers return a dict suitable for
 passing to `hass.config_entries.async_update_entry(entry, **update_kwargs)`
 or `None` if no update is required.
 """
-from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_USERNAME, UnitOfVolumeFlowRate
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .api_json import SyrConnectJsonAPI
 from .const import (
-    _SYR_CONNECT_DEFAULT_CF_BUNDLE_IDENTIFIER,
+    _conelclearpro_connect_DEFAULT_CF_BUNDLE_IDENTIFIER,
     API_TYPE_JSON,
     API_TYPE_XML,
     CONF_API_TYPE,
     CONF_HOST,
+    CONF_LOGIN_REQUIRED,
     CONF_MODEL,
     CONF_SERVICE,
 )
+from .exceptions import SyrConnectInvalidResponseError
+from .helpers import build_entry_unique_id
+from .models import detect_model
+
+# Renamed local JSON API models (CONF_MODEL) -> their new name
+_conelclearpro_connect_MIGRATIONS_LOCAL_MODEL_RENAMES = {
+    "neosoft": "neosoft5000",
+    "optimat22duo": "optimat2duo",
+}
+
+# Removed generic MultiController models (CONF_MODEL) -> their local base path. Such a
+# model could be any role (getDFM) of its brand, so the migration asks the device.
+_conelclearpro_connect_MIGRATIONS_LOCAL_MODEL_REMOVED = {
+    "conceptmuco": "/trio",
+    "conelmuco": "/trio",
+    "ditechmuco": "/trio",
+    "optimamuco": "/trio",
+    "sanibelmuco": "/trio",
+    "syrmuco": "/trio",
+    "takemuco": "/trio",
+}
 
 
 def v1_to_v2_update_kwargs(entry: ConfigEntry) -> dict | None:
@@ -64,11 +87,15 @@ def v2_to_v3_fix_flo_unit(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """
     ent_reg = er.async_get(hass)
     for entity_entry in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
-        if entity_entry.domain != "sensor" or not entity_entry.unique_id.endswith("_getFLO"):
+        if entity_entry.domain != "sensor" or not entity_entry.unique_id.endswith(
+            "_getFLO"
+        ):
             continue
         # Legacy field: set directly on entity (older HA versions / manual UI override)
         if entity_entry.unit_of_measurement == UnitOfVolumeFlowRate.LITERS_PER_MINUTE:
-            ent_reg.async_update_entity(entity_entry.entity_id, unit_of_measurement=None)
+            ent_reg.async_update_entity(
+                entity_entry.entity_id, unit_of_measurement=None
+            )
         # HA stores the suggested unit in "sensor.private" (set automatically on first
         # registration) and the user-selected unit in "sensor" (set via UI).
         # Both namespaces must be cleared so HA picks up the new native unit from code.
@@ -98,7 +125,7 @@ def v3_to_v4_add_service(entry: ConfigEntry) -> dict | None:
         return None
     if entry.data.get(CONF_SERVICE):
         return None
-    new_data = {**entry.data, CONF_SERVICE: _SYR_CONNECT_DEFAULT_CF_BUNDLE_IDENTIFIER}
+    new_data = {**entry.data, CONF_SERVICE: _conelclearpro_connect_DEFAULT_CF_BUNDLE_IDENTIFIER}
     return {"data": new_data, "version": 4}
 
 
@@ -125,10 +152,14 @@ def v5_to_v6_fix_nps_unit(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """
     ent_reg = er.async_get(hass)
     for entity_entry in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
-        if entity_entry.domain != "sensor" or not entity_entry.unique_id.endswith("_getNPS"):
+        if entity_entry.domain != "sensor" or not entity_entry.unique_id.endswith(
+            "_getNPS"
+        ):
             continue
         if entity_entry.unit_of_measurement == "":
-            ent_reg.async_update_entity(entity_entry.entity_id, unit_of_measurement=None)
+            ent_reg.async_update_entity(
+                entity_entry.entity_id, unit_of_measurement=None
+            )
         for namespace in ("sensor.private", "sensor"):
             ns_opts = dict(entity_entry.options.get(namespace, {}))
             changed = False
@@ -161,3 +192,86 @@ def v6_to_v7_scope_unique_id_by_entry(hass: HomeAssistant, entry: ConfigEntry) -
             entity_entry.entity_id,
             new_unique_id=f"{entry.entry_id}_{entity_entry.unique_id}",
         )
+
+
+def v7_to_v8_rename_local_model(entry: ConfigEntry) -> dict | None:
+    """Compute update kwargs for migrating v7 -> v8.
+
+    Local JSON API entries store the model chosen at setup (CONF_MODEL). The
+    Optima T2.3 model was renamed, and the generic NeoSoft model (dk=1200) turned
+    out to be the NeoSoft 5000, so these entries could no longer be loaded.
+    """
+    if entry.data.get(CONF_API_TYPE) != API_TYPE_JSON:
+        return None
+    new_model = _conelclearpro_connect_MIGRATIONS_LOCAL_MODEL_RENAMES.get(
+        str(entry.data.get(CONF_MODEL))
+    )
+    if new_model is None:
+        return None
+    return {"data": {**entry.data, CONF_MODEL: new_model}, "version": 8}
+
+
+async def v8_to_v9_detect_local_model(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> dict | None:
+    """Compute update kwargs for migrating v8 -> v9.
+
+    Local JSON API entries store the model chosen at setup (CONF_MODEL). The
+    generic MultiController models were removed, so these entries could no longer
+    be loaded. Such a model could be any of its brand's roles, so the model is
+    detected from the device.
+
+    Raises:
+        SyrConnectConnectionError: If the device cannot be reached
+        SyrConnectError: If the device's model cannot be detected
+    """
+    if entry.data.get(CONF_API_TYPE) != API_TYPE_JSON:
+        return None
+    base_path = _conelclearpro_connect_MIGRATIONS_LOCAL_MODEL_REMOVED.get(
+        str(entry.data.get(CONF_MODEL))
+    )
+    if base_path is None:
+        return None
+    new_model = await _async_detect_local_model(hass, entry, base_path)
+    return {"data": {**entry.data, CONF_MODEL: new_model}, "version": 9}
+
+
+def v9_to_v10_entry_unique_id_by_service(entry: ConfigEntry) -> dict | None:
+    """Compute update kwargs for migrating v9 -> v10.
+
+    The unique_id of a cloud entry was "xml_<username>", so the same e-mail address
+    could not be set up for a second cloud service, although every service has
+    accounts of its own. It now contains the service (see
+    helpers.build_entry_unique_id). Local entries keep "json_<host>".
+    """
+    if entry.data.get(CONF_API_TYPE) != API_TYPE_XML:
+        return None
+    return {
+        "unique_id": build_entry_unique_id(API_TYPE_XML, entry.data),
+        "version": 10,
+    }
+
+
+async def _async_detect_local_model(
+    hass: HomeAssistant, entry: ConfigEntry, base_path: str
+) -> str:
+    """Detect the model of a local device from its status.
+
+    Raises:
+        SyrConnectConnectionError: If the device cannot be reached
+        SyrConnectInvalidResponseError: If no model with local access matches
+    """
+    api = SyrConnectJsonAPI(
+        async_get_clientsession(hass),
+        host=entry.data[CONF_HOST],
+        base_path=base_path,
+        login_required=entry.data.get(CONF_LOGIN_REQUIRED),
+    )
+    devices = await api.get_devices("local")
+    status = await api.get_device_status(devices[0]["id"])
+    model = detect_model(status)
+    if model.base_path is None:
+        raise SyrConnectInvalidResponseError(
+            f"No model with local access matches the device ({model.display_name})"
+        )
+    return model.name

@@ -1,29 +1,44 @@
 """Tests for checksum module."""
-from __future__ import annotations
 
-from custom_components.syr_connect.checksum import SyrChecksum
+from pathlib import Path
+from typing import Any, cast
+
+from defusedxml import ElementTree as DefusedET
+import pytest
+
+from custom_components.conelclearpro_connect.checksum import SyrChecksum
+from custom_components.conelclearpro_connect.const import (
+    _conelclearpro_connect_CLIENT_CHECKSUM_KEY1,
+    _conelclearpro_connect_CLIENT_CHECKSUM_KEY2,
+)
 
 
-def test_checksum_init():
+def test_checksum_init() -> None:
     """Test checksum initialization."""
     checksum = SyrChecksum("ABCDEFGHIJKLMNOP", "TESTKEY")
     assert checksum.base_characters == "ABCDEFGHIJKLMNOP"
     assert checksum.key == "TESTKEY"
 
 
-def test_extract_bits():
-    """Test bit extraction."""
-    # 0b11010110 = 214
-    # Extract 3 bits starting at position 2: bits 2,3,4 = 101 = 5
-    result = SyrChecksum.extract_bits(214, 2, 3)
-    assert result == 5
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("a", 122),
+        ("test", 395),
+        (" test ", 395),
+        ("zz", 287),
+        ("üöä", 738),
+        ("0b09f7ce-41a0-4085-9e69-fa8827a32b6f", 4011),
+        ("App-3.9.7-de-DE-iOS-iPhone-27.0.0-de.consoft.syr.connect", 6169),
+    ],
+)
+def test_compute_checksum_value_exact(value: str, expected: int) -> None:
+    """Exact values of the SYR algorithm, recorded from the original bitwise implementation."""
+    checksum = SyrChecksum("L8KZG4F5DSM6ANBV3CXY7W2ER1T9H0UP", "KHGK5X29LVNZU56T")
+    assert checksum.compute_checksum_value(value) == expected
 
-    # Extract 5 bits starting at position 0: bits 0-4 = 10110 = 22
-    result = SyrChecksum.extract_bits(214, 0, 5)
-    assert result == 22
 
-
-def test_compute_checksum_value_empty():
+def test_compute_checksum_value_empty() -> None:
     """Test checksum computation with empty string."""
     checksum = SyrChecksum("L8KZG4F5DSM6ANBV3CXY7W2ER1T9H0UP", "KHGK5X29LVNZU56T")
     result = checksum.compute_checksum_value("")
@@ -32,11 +47,11 @@ def test_compute_checksum_value_empty():
     result = checksum.compute_checksum_value("   ")
     assert result == 0
 
-    result = checksum.compute_checksum_value(None)
+    result = checksum.compute_checksum_value(cast(Any, None))
     assert result == 0
 
 
-def test_compute_checksum_value_basic():
+def test_compute_checksum_value_basic() -> None:
     """Test checksum computation with basic strings."""
     checksum = SyrChecksum("L8KZG4F5DSM6ANBV3CXY7W2ER1T9H0UP", "KHGK5X29LVNZU56T")
     result = checksum.compute_checksum_value("test")
@@ -44,7 +59,7 @@ def test_compute_checksum_value_basic():
     assert result > 0
 
 
-def test_compute_checksum_value_with_unicode():
+def test_compute_checksum_value_with_unicode() -> None:
     """Test checksum computation with Unicode characters."""
     checksum = SyrChecksum("L8KZG4F5DSM6ANBV3CXY7W2ER1T9H0UP", "KHGK5X29LVNZU56T")
     result = checksum.compute_checksum_value("üöä")
@@ -52,7 +67,7 @@ def test_compute_checksum_value_with_unicode():
     assert result > 0
 
 
-def test_checksum_value_wrapping():
+def test_checksum_value_wrapping() -> None:
     """Test checksum value wrapping when sum >= base_characters length."""
     # Use actual production constants from const.py to ensure valid operation
     checksum = SyrChecksum("L8KZG4F5DSM6ANBV3CXY7W2ER1T9H0UP", "KHGK5X29LVNZU56T")
@@ -61,49 +76,72 @@ def test_checksum_value_wrapping():
     assert result > 0
 
 
-def test_compute_xml_checksum_with_attributes():
-    """Test that compute_xml_checksum correctly processes XML attributes."""
+def test_compute_element_checksum_with_attributes() -> None:
+    """Test that compute_element_checksum correctly processes XML attributes."""
     checksum = SyrChecksum("L8KZG4F5DSM6ANBV3CXY7W2ER1T9H0UP", "KHGK5X29LVNZU56T")
-    xml_string = '<root><element a="value1" b="value2" n="ignored"/></root>'
+    root = DefusedET.fromstring(
+        '<root><element a="value1" b="value2" n="ignored"/></root>'
+    )
 
-    result = checksum.compute_xml_checksum(xml_string)
+    result = checksum.compute_element_checksum(root)
 
     # Must produce a non-zero hex string, and 'n' attribute must be ignored
     assert result != "0"
-    result_without_n = checksum.compute_xml_checksum('<root><element a="value1" b="value2"/></root>')
+    result_without_n = checksum.compute_element_checksum(
+        DefusedET.fromstring('<root><element a="value1" b="value2"/></root>')
+    )
     assert result == result_without_n
 
 
-def test_compute_xml_checksum_invalid_xml():
-    """Test that compute_xml_checksum returns '0' for invalid XML."""
-    checksum = SyrChecksum("L8KZG4F5DSM6ANBV3CXY7W2ER1T9H0UP", "KHGK5X29LVNZU56T")
-    result = checksum.compute_xml_checksum("not valid xml <unclosed")
-    assert result == "0"
-
-
 def test_compute_checksum_next_byte_and_offset_negative() -> None:
-    """Force next-byte branch and missing key character offset path."""
+    """A key character missing from base_characters uses offset 0."""
     # base characters long enough for wrapping logic and indexing
-    base = ''.join(chr(65 + i) for i in range(64))
+    base = "".join(chr(65 + i) for i in range(64))
 
-    # Use a key character that is NOT present in base to trigger offset < 0 path
+    # Use a key character that is NOT present in base to trigger the offset 0 fallback
     checksum = SyrChecksum(base, "!")
 
-    # Two-character ASCII input will generate multiple 5-bit chunks and cause
-    # the implementation to hit the `bit_offset > 3` branch (next_byte logic).
+    # Two ASCII characters span several 5-bit chunks, including chunks across a byte boundary
     result = checksum.compute_checksum_value("zz")
-    assert isinstance(result, int)
-    assert result >= 0
+    assert result == 313
 
 
 def test_compute_checksum_with_high_offset_key() -> None:
     """Use a key with a high offset to exercise the wrapping branch."""
     # Create a 32-length base so offsets can be large and wrapping can occur
-    base32 = ''.join(chr(65 + i) for i in range(32))
+    base32 = "".join(chr(65 + i) for i in range(32))
     # pick last char to maximize offset
     key = base32[-1]
     checksum = SyrChecksum(base32, key)
     # Use a short string that still produces multiple chunks
     result = checksum.compute_checksum_value("zz")
-    assert isinstance(result, int)
-    assert result > 0
+    assert result == 344
+
+
+_XML_FIXTURES = sorted(
+    [
+        *(Path(__file__).parent / "fixtures/xml").glob("*.xml"),
+        *(Path(__file__).parent / "fixtures/xml/requests").glob("*.xml"),
+    ]
+)
+
+
+@pytest.mark.parametrize("fixture", _XML_FIXTURES, ids=lambda p: p.name)
+def test_fixture_checksum_is_valid(fixture: Path) -> None:
+    """Requests and server responses share one checksum (all attribute values except `n`, without <cs>).
+
+    Verified against real responses; keeps the fixtures consistent after anonymizing values.
+    """
+
+    root = DefusedET.fromstring(fixture.read_bytes())
+    cs_elements = root.findall("cs")
+    if not cs_elements:
+        pytest.skip("fixture has no <cs> element")
+    expected = cs_elements[0].get("v")
+    for cs in cs_elements:
+        root.remove(cs)
+
+    checksum = SyrChecksum(
+        _conelclearpro_connect_CLIENT_CHECKSUM_KEY1, _conelclearpro_connect_CLIENT_CHECKSUM_KEY2
+    )
+    assert checksum.compute_element_checksum(root) == expected

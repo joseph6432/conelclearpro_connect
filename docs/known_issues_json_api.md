@@ -1,7 +1,7 @@
 # Known issues — SYR JSON API
 
 This document lists known deviations between the official SYR JSON API
-documentation (https://iotsyrpublicapi.z1.web.core.windows.net/#einleitung)
+documentation (<https://iotsyrpublicapi.z1.web.core.windows.net/#einleitung>)
 and the behavior observed in real devices, the test fixtures in this
 repository.
 
@@ -20,7 +20,10 @@ repository.
 - **Response key and URL path casing inconsistencies:** `set` response keys and `/set` path segment casing vary between devices and firmwares.
 - **Data-type inconsistencies:** Identical fields may appear as numbers, strings, or booleans depending on firmware/version.
 - **API error-code case-sensitivity:** Error codes `NSC` and `MIMA` are expected uppercase; lowercased variants are treated as invalid.
+- **Time values are local time:** `getLAR` counts the local wall time of the device, not UTC; see issue 5 in [known_issues_xml_api.md](known_issues_xml_api.md).
 - **Canonical response format (compact status-key):** Devices commonly return compact status-key responses (e.g. {"setABtrue":"OK"}) instead of the typed JSON shown in the official documentation; the integration operates on the compact device format at runtime and treats it as the canonical representation.
+- **SafeTech+ pressure key:** The official documentation lists `getBAR2` for the SafeTech+; the devices report the pressure in `getBAR`.
+- **All in One + filling volumes:** The official documentation gives the filling volumes `getCFV`, `getLFV` and `getTRV` in liters; the All in One + reports them in milliliters.
 
 ## Detailed deviations, impacts, and references
 
@@ -33,17 +36,17 @@ repository.
 - Mitigation in this project:
   - The client uses `resp.json(content_type=None)` to tolerate missing or incorrect headers.
 - Evidence / references:
-  - Client: [custom_components/syr_connect/api_json.py](custom_components/syr_connect/api_json.py)
+  - Client: [custom_components/conelclearpro_connect/api_json.py](custom_components/conelclearpro_connect/api_json.py)
 
 ### 2. ADM login endpoint is optional (HTTP 404)
 
 - To be considered as a good design change in newer devices.
 - Description: The legacy ADM login (`/set/ADM/(2)f`) is required by some older firmwares (SafeTech v4 / Pontos) but absent on all newer devices. Devices without this endpoint typically return HTTP 404.
 - Impact: Integrations must treat a 404 from the login endpoint as "login not required" instead of failing initialization.
-- Mitigation in this project: 
+- Mitigation in this project:
   - `SyrConnectJsonAPI.login()` treats 404 as "login not required" and continues.
 - Evidence / references:
-  - Client: [custom_components/syr_connect/api_json.py](custom_components/syr_connect/api_json.py) (login handles 404)
+  - Client: [custom_components/conelclearpro_connect/api_json.py](custom_components/conelclearpro_connect/api_json.py) (login handles 404)
   - Tests: [tests/test_api_json.py](tests/test_api_json.py) (test_login_404_treated_as_not_required)
 
 ### 3. Percent-encoding and literal special characters
@@ -87,7 +90,7 @@ curl -i "http://localhost:5333/trio/set/ab/false"  # -> {"setABtrue":"OK"}
 ```
 
 - Evidence / references:
-  - Client: [custom_components/syr_connect/api_json.py](custom_components/syr_connect/api_json.py)
+  - Client: [custom_components/conelclearpro_connect/api_json.py](custom_components/conelclearpro_connect/api_json.py)
   - Tests: [tests/test_api_json.py](tests/test_api_json.py)
 
 ### 5. Data-type inconsistencies
@@ -108,7 +111,7 @@ curl -i "http://localhost:5333/trio/set/ab/false"  # -> {"setABtrue":"OK"}
 - Mitigation in this project:
   - Catch and normalize to "no such command" if 404 is returned
 - Evidence / references:
-  - Client: [custom_components/syr_connect/api_json.py](custom_components/syr_connect/api_json.py) (`_execute_http_get()` HTTP 404 handling)
+  - Client: [custom_components/conelclearpro_connect/api_json.py](custom_components/conelclearpro_connect/api_json.py) (`_execute_http_get()` HTTP 404 handling)
   - Tests: [tests/test_api_json.py](tests/test_api_json.py) (test_execute_http_get_404_error)
 
 ### 7. Documentation accuracy and misleading examples
@@ -156,6 +159,30 @@ Actual (expected) device response:
 - Mitigation in this project: The integration requires and expects the actual device response format — the compact status-key representation (e.g. {"setABtrue":"OK"}). The API documentation should be regarded as incorrect.
 - Official incorrect documentation: [SYR JSON API documentation](https://iotsyrpublicapi.z1.web.core.windows.net/)
 
+### 8. Time values are local time, not UTC
+
+- Description: `getLAR` (last regeneration) counts the local wall time of the device in seconds since 1970, not UTC, as in the XML API. The value comes from the device, so both APIs report the same number.
+- Impact: see issue 5 in [known_issues_xml_api.md](known_issues_xml_api.md).
+- Mitigation in this project: The local API reports no UTC offset (the cloud's `tzo`), so `_value_lar()` in `custom_components/conelclearpro_connect/sensor.py` reads the value as wall time in the time zone of Home Assistant.
+
+### 9. SafeTech+ reports the pressure in `getBAR`, not `getBAR2`
+
+- Tentatively be considered a documentation defect.
+- Description: The official per-model validity matrix marks `BAR2` as available and `BAR` as not available for the SafeTech+. The devices do the opposite: `getBAR` carries the pressure in mbar and `getBAR2` is `null` in the JSON API and empty in the XML API.
+- Impact: Following the documentation, the SafeTech+ has no pressure sensor.
+- Mitigation in this project: The SafeTech+ allowlist in `custom_components/conelclearpro_connect/devices/safetechplus.py` contains `getBAR` instead of `getBAR2`, and the matrix in [syrconnect-protocol.md](syrconnect-protocol.md) is corrected.
+- Evidence / references:
+  - Fixtures: [tests/fixtures/json/SyrSafeTechPlus_get_all.json](tests/fixtures/json/SyrSafeTechPlus_get_all.json), [tests/fixtures/xml/SyrSafeTechPlus_GetDeviceCollectionStatus.xml](tests/fixtures/xml/SyrSafeTechPlus_GetDeviceCollectionStatus.xml)
+
+### 10. All in One + reports the filling volumes in milliliters
+
+- Tentatively be considered a documentation defect.
+- Description: The official documentation gives the filling volumes `getCFV` (current filling volume), `getLFV` (last refilled volume) and `getTRV` (cumulative refilled volume) in liters. The All in One + (firmware `All-in-One+ V4.05`) reports them in milliliters, for example `getLFV` "6600" for a refill of 6.6 l, which took 159 s (`getLFT`). The later MultiController filling controllers report liters.
+- Impact: Read as liters, the All in One + shows refills 1000 times too large.
+- Mitigation in this project: The All in One + profile in `custom_components/conelclearpro_connect/devices/allinoneplus.py` divides `getCFV`, `getLFV` and `getTRV` by 1000 (`sensor_divisors`).
+- Evidence / references:
+  - Report: [issue #64](https://github.com/alexhass/conelclearpro_connect/issues/64)
+
 ## Recommendations
 
 - Treat device responses as potentially non-conformant and normalize as needed (coerce numeric/boolean/string differences).
@@ -186,7 +213,7 @@ curl -i "http://localhost:5333/trio/get/XYZ"
 
 ## References
 
-- Official API documentation: https://iotsyrpublicapi.z1.web.core.windows.net/
-- Client code: [custom_components/syr_connect/api_json.py](custom_components/syr_connect/api_json.py)
+- Official API documentation: <https://iotsyrpublicapi.z1.web.core.windows.net/>
+- Client code: [custom_components/conelclearpro_connect/api_json.py](custom_components/conelclearpro_connect/api_json.py)
 - Tests: [tests/test_api_json.py](tests/test_api_json.py)
 - Fixtures: [tests/fixtures/json/SyrSafeTech_get_all.json](tests/fixtures/json/SyrSafeTech_get_all.json), [tests/fixtures/json/SyrNeoSoft2500_get_all.json](tests/fixtures/json/SyrNeoSoft2500_get_all.json)

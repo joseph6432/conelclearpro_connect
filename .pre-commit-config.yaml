@@ -1,14 +1,22 @@
 repos:
-  - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: main
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.3
     hooks:
-      - id: ruff
-        args: [
-          "check",
-          "--select=E,F,W,B,B9",
-          "--extend-ignore=E501",
-          ".",
-        ]
+      - id: ruff-check
+        args:
+          - --fix
+      - id: ruff-format
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
+      - id: codespell
+  - repo: https://github.com/streetsidesoftware/cspell-cli
+    rev: v10.4.0
+    hooks:
+      - id: cspell
+        files: ^README\.de\.md$
+        additional_dependencies:
+          - "@cspell/dict-de-de@4.1.3"
   - repo: local
     hooks:
       - id: ruff-local
@@ -17,4 +25,17 @@ repos:
         language: python
         additional_dependencies: ["ruff"]
         pass_filenames: false
-        args: ["check", "--select=E,F,W,B,B9", "--extend-ignore=E501", "."]
+        args: ["check", "."]
+      - id: ruff-format-local
+        name: ruff format (venv)
+        entry: ruff
+        language: python
+        additional_dependencies: ["ruff"]
+        pass_filenames: false
+        args: ["format", "--check", "."]
+      # A product name in a German compound stays unchanged: SYR Connect-Konto
+      - id: german-compounds
+        name: German compounds with product names
+        entry: '\b(SYR-Connect|Home-Assistant)\b'
+        language: pygrep
+        files: ^(README\.de\.md|custom_components/conelclearpro_connect/translations/de\.json)$

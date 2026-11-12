@@ -1,85 +1,51 @@
 """Helper functions for SYR Connect integration."""
-from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Set as AbstractSet
+import contextlib
 import ipaddress
 import logging
+import math
 import re
-from types import ModuleType
 from typing import Any
 
+from homeassistant.components.recorder import get_instance
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_HOST, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.util import slugify
 
 from .const import (
-    _SYR_CONNECT_API_JSON_SCAN_INTERVAL_DEFAULT,
-    _SYR_CONNECT_API_XML_SCAN_INTERVAL_DEFAULT,
-    _SYR_CONNECT_SCAN_INTERVAL_CONF,
-    _SYR_CONNECT_SENSOR_ALA_CODES_BY_MODEL,
-    _SYR_CONNECT_SENSOR_ALA_CODES_GENERIC,
-    _SYR_CONNECT_SENSOR_EXCLUDED,
-    _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_IPADDRESS,
-    _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_STRING,
-    _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_VALUE,
-    _SYR_CONNECT_SENSOR_NOT_CODES_GENERIC,
-    _SYR_CONNECT_SENSOR_WRN_CODES_GENERIC,
+    _conelclearpro_connect_API_JSON_SCAN_INTERVAL_DEFAULT,
+    _conelclearpro_connect_API_XML_SCAN_INTERVAL_DEFAULT,
+    _conelclearpro_connect_DEFAULT_CF_BUNDLE_IDENTIFIER,
+    _conelclearpro_connect_SCAN_INTERVAL_CONF,
+    _conelclearpro_connect_SENSOR_ALA_CODES_GENERIC,
+    _conelclearpro_connect_SENSOR_CND_PER_DH,
+    _conelclearpro_connect_SENSOR_NOT_CODES_GENERIC,
+    _conelclearpro_connect_SENSOR_WRN_CODES_GENERIC,
     API_TYPE_JSON,
     API_TYPE_XML,
     CONF_API_TYPE,
+    CONF_SERVICE,
     DOMAIN,
 )
-from .devices import (
-    lex,
-    lexplus10s,
-    lexplus10sl,
-    muco_backwash,
-    muco_connectioncentre,
-    muco_filling,
-    muco_leakprotect,
-    muco_triolock,
-    neosoft_duo,
-    neosoft_single,
-    safefloor,
-    safetech,
-    safetechplus,
-    safetplus,
-    trio,
-)
-from .models import MODEL_SIGNATURES, detect_model
+from .data import SyrConnectCoordinatorData, SyrConnectDevice
+from .devices import WHU_FACTORS_FROM_DH
+from .models import MODEL_SIGNATURES, UNKNOWN_MODEL, SyrConnectModel, detect_model
 
 _LOGGER = logging.getLogger(__name__)
-
-# Statically imported above (instead of importlib.import_module()'d on demand in
-# get_model_known_keys()) so module resolution happens at integration load time
-# rather than via a blocking import call from inside the event loop.
-_DEVICE_MODULES: dict[str, ModuleType] = {
-    "lex": lex,
-    "lexplus10s": lexplus10s,
-    "lexplus10sl": lexplus10sl,
-    "muco_backwash": muco_backwash,
-    "muco_connectioncentre": muco_connectioncentre,
-    "muco_filling": muco_filling,
-    "muco_leakprotect": muco_leakprotect,
-    "muco_triolock": muco_triolock,
-    "neosoft_single": neosoft_single,
-    "neosoft_duo": neosoft_duo,
-    "safefloor": safefloor,
-    "safetech": safetech,
-    "safetechplus": safetechplus,
-    "safetplus": safetplus,
-    "trio": trio,
-}
 
 
 def is_value_true(val: object) -> bool:
     """Normalize a heterogeneous API flag value to a Python bool.
 
-    SYR devices report binary activation flags (e.g. getPAx) in varying
-    formats depending on firmware version: native bool, int/float,
-    or strings such as "1" or "true". This function provides a single,
-    consistent conversion so callers do not need to handle each format separately.
+    SYR devices report binary activation flags (e.g. getPAx, getBUZ) in varying
+    formats depending on API and firmware version: the XML API always sends strings
+    ("1", "0", "True", "false"), the local JSON API native bool or int/float. This
+    function is the single conversion for all boolean keys, so callers do not need
+    to handle each format separately.
 
     Args:
         val: Raw value received from the device API.
@@ -93,7 +59,7 @@ def is_value_true(val: object) -> bool:
     if isinstance(val, (int | float)):
         try:
             return int(float(val)) != 0
-        except (ValueError, TypeError):
+        except ValueError, TypeError, OverflowError:
             return False
     if isinstance(val, str):
         sval = val.strip().lower()
@@ -103,7 +69,7 @@ def is_value_true(val: object) -> bool:
             return False
         try:
             return int(float(sval)) != 0
-        except (ValueError, TypeError):
+        except ValueError, TypeError, OverflowError:
             return False
     return False
 
@@ -118,7 +84,7 @@ def get_default_scan_interval_for_entry(entry: ConfigEntry | dict | None) -> int
     """
     # If no entry provided, preserve legacy XML default
     if entry is None:
-        return _SYR_CONNECT_API_XML_SCAN_INTERVAL_DEFAULT
+        return _conelclearpro_connect_API_XML_SCAN_INTERVAL_DEFAULT
 
     # Accept either a ConfigEntry or a plain dict (used internally by the coordinator)
     if isinstance(entry, dict):
@@ -129,25 +95,111 @@ def get_default_scan_interval_for_entry(entry: ConfigEntry | dict | None) -> int
         data = getattr(entry, "data", None) or {}
 
     # If user explicitly set a scan interval option, use it
-    if _SYR_CONNECT_SCAN_INTERVAL_CONF in options:
+    if _conelclearpro_connect_SCAN_INTERVAL_CONF in options:
         try:
-            return int(options[_SYR_CONNECT_SCAN_INTERVAL_CONF])
-        except (TypeError, ValueError):
+            return int(options[_conelclearpro_connect_SCAN_INTERVAL_CONF])
+        except TypeError, ValueError:
             pass
 
     # Otherwise use per-API default (default to XML for legacy)
     api_type = data.get(CONF_API_TYPE, API_TYPE_XML)
     return (
-        _SYR_CONNECT_API_JSON_SCAN_INTERVAL_DEFAULT
+        _conelclearpro_connect_API_JSON_SCAN_INTERVAL_DEFAULT
         if api_type == API_TYPE_JSON
-        else _SYR_CONNECT_API_XML_SCAN_INTERVAL_DEFAULT
+        else _conelclearpro_connect_API_XML_SCAN_INTERVAL_DEFAULT
     )
+
+
+def get_device(
+    coordinator_data: SyrConnectCoordinatorData | None, device_id: str
+) -> SyrConnectDevice | None:
+    """Return the device with the given id from the coordinator data.
+
+    Args:
+        coordinator_data: Coordinator data, None before the first refresh
+        device_id: Device ID (serial number)
+
+    Returns:
+        The device, or None if it is not in the data
+    """
+    if not coordinator_data:
+        return None
+    for device in coordinator_data.get("devices", []):
+        if device.get("id") == device_id:
+            return device
+    return None
+
+
+def detect_device_model(
+    device: SyrConnectDevice, service: str | None = None, model: str | None = None
+) -> SyrConnectModel:
+    """Detect the model of a device from its cloud device kind and its status.
+
+    Only the cloud API (XML) reports `dk`, `dkv` and `sbt`; without them the model is
+    detected from the status alone. A model chosen at setup (local JSON API) is used
+    without detection (see `models.detect_model()`).
+
+    Args:
+        device: The device from the coordinator data
+        service: The cf_bundle_identifier of the config entry, None for the local
+            JSON API; the log names the model as this service brands it
+        model: The name of the model chosen at setup (CONF_MODEL), None to detect it
+
+    Returns:
+        The chosen or detected model, or `UNKNOWN_MODEL`
+    """
+    return detect_model(
+        device.get("status"),
+        dk=device.get("dk"),
+        dkv=device.get("dkv"),
+        sbt=device.get("sbt"),
+        service=service,
+        model=model,
+    )
+
+
+def get_device_model(device: SyrConnectDevice | None) -> SyrConnectModel:
+    """Return the model of a device, as detected by the coordinator.
+
+    Device data that was not built by the coordinator has no stored model; it is
+    detected instead.
+
+    Args:
+        device: The device from the coordinator data, or None if it is missing
+
+    Returns:
+        The detected model, or `UNKNOWN_MODEL` without a device
+    """
+    if device is None:
+        return UNKNOWN_MODEL
+    model = device.get("model")
+    if model is not None:
+        return model
+    return detect_device_model(device)
+
+
+def is_device_available(coordinator: Any, device_id: str) -> bool:
+    """Return whether the entities of a device are available.
+
+    Shared by the `available` property of all entities of a device:
+    - False if the last coordinator update failed.
+    - The device's own `available` flag otherwise (False while the cloud reports it offline).
+    - False if the device is not in the data: temporary failures keep the devices of the
+      last update, so a missing device was removed from the account (it is removed from
+      Home Assistant at the next setup).
+    """
+    if not coordinator.last_update_success:
+        return False
+    device = get_device(coordinator.data, device_id)
+    if device is None:
+        return False
+    return bool(device.get("available", True))
 
 
 def build_device_info(
     device_id: str,
     device_name: str,
-    coordinator_data: dict[str, Any],
+    coordinator_data: SyrConnectCoordinatorData | None,
 ) -> DeviceInfo:
     """Build DeviceInfo object from coordinator data.
 
@@ -169,33 +221,28 @@ def build_device_info(
     configuration_url: str | None = None
 
     # Extract device information from coordinator data
-    for device in coordinator_data.get('devices', []):
-        if device['id'] == device_id:
-            status = device.get('status', {})
+    device = get_device(coordinator_data, device_id)
+    if coordinator_data is not None and device is not None:
+        status = device.get("status", {})
 
-            # Get human-friendly model display name and manufacturer
-            detected = detect_model(status)
-            display_name = detected.get("display_name")
-            if display_name:
-                model = str(display_name)
-            manufacturer = detected.get("manufacturer") or None
-            configuration_url = coordinator_data.get("configuration_url")
+        # Get human-friendly model display name and manufacturer of the cloud service
+        detected = get_device_model(device)
+        manufacturer, model = detected.branded(coordinator_data.get("service"))
+        configuration_url = coordinator_data.get("configuration_url")
 
-            # Get software version from getVER
-            if 'getVER' in status and status['getVER']:
-                sw_version = str(status['getVER'])
+        # Get software version from getVER
+        if status.get("getVER"):
+            sw_version = str(status["getVER"])
 
-            # Get hardware version from getFIR
-            if 'getFIR' in status and status['getFIR']:
-                hw_version = str(status['getFIR'])
+        # Get hardware version from getFIR
+        if status.get("getFIR"):
+            hw_version = str(status["getFIR"])
 
-            # Get MAC address using prioritized helper
-            detected_mac = get_current_mac(status)
-            if detected_mac:
-                mac = str(detected_mac)
-                connections.add(("mac", mac))
-
-            break
+        # Get MAC address using prioritized helper
+        detected_mac = get_current_mac(status)
+        if detected_mac:
+            mac = str(detected_mac)
+            connections.add(("mac", mac))
 
     # Use fallback if no model found
     if model is None:
@@ -212,7 +259,7 @@ def build_device_info(
         sw_version=sw_version,
         hw_version=hw_version,
         serial_number=device_id,
-        connections=connections if connections else set(),
+        connections=connections or set(),
         configuration_url=configuration_url,
     )
 
@@ -254,66 +301,169 @@ def build_unique_id(entry_id: str | None, device_id: str, key: str) -> str:
     return f"{device_id}_{key}"
 
 
-def get_model_known_keys(model_info: dict[str, Any], platform: str, global_known_keys: set[str]) -> set[str]:
-    """Return the known-keys allowlist for a platform, scoped to the detected model.
+def build_entry_unique_id(api_type: str, data: Mapping[str, Any]) -> str:
+    """Return the unique_id of a config entry for its connection data.
 
-    Looks for an optional `devices/<name>.py` module (matching the detected
-    model's `device_file`, or its `name` when `device_file` is not set - see
-    `models.MODEL_SIGNATURES`) and, if it defines a `<PLATFORM>_KNOWN_KEYS`
-    set (e.g. `SENSOR_KNOWN_KEYS`), uses that as a POSITIVE, device-specific
-    allowlist instead of `global_known_keys`. `device_file` lets multiple
-    model signatures that are largely identical (e.g. rebranded variants of
-    the same hardware) share a single override file instead of duplicating
-    near-identical content per model `name`.
+    A local entry is identified by its host. A cloud account belongs to its cloud
+    service (CONF_SERVICE, the cf_bundle_identifier of the app): the login only works
+    with the app name of the service, also where several services share one server.
+    The same e-mail address can therefore be a different account in every service.
+
+    Args:
+        api_type: API type of the entry (API_TYPE_XML or API_TYPE_JSON).
+        data: Entry data with the host (local) or the service and username (cloud).
+
+    Returns:
+        "json_<host>" or "xml_<cf_bundle_identifier>_<username>", e.g.
+        "xml_de.consoft.syr.connect_me@example.com".
+    """
+    if api_type == API_TYPE_JSON:
+        return f"{API_TYPE_JSON}_{data[CONF_HOST]}"
+    service = data.get(CONF_SERVICE) or _conelclearpro_connect_DEFAULT_CF_BUNDLE_IDENTIFIER
+    return f"{API_TYPE_XML}_{service}_{data[CONF_USERNAME]}"
+
+
+def build_statistic_id(device_id: str, key: str) -> str:
+    """Build the external statistic ID of the measurement history of a sensor.
+
+    External statistics need the form "<domain>:<object id>" with slugs. The ID has
+    no entry_id: a device reachable from several hubs shares one history.
+
+    Args:
+        device_id: Device ID (serial number).
+        key: Sensor key of the series (e.g. "getCEL").
+
+    Returns:
+        Statistic ID, e.g. "conelclearpro_connect:123456789_getcel_history".
+    """
+    return f"{DOMAIN}:{slugify(device_id)}_{key.lower()}_history"
+
+
+def clear_device_statistics(
+    hass: HomeAssistant, entry_id: str, device_ids: AbstractSet[str]
+) -> None:
+    """Delete the measurement history statistics of devices removed from an entry.
+
+    The statistic ID has no entry_id (see build_statistic_id), so a device that
+    another config entry of this integration still has keeps its history. The model
+    of a removed device is no longer known, so the IDs of every series key of every
+    device profile are cleared; IDs without statistics are ignored.
+
+    Args:
+        hass: Home Assistant instance.
+        entry_id: Config entry the devices were removed from.
+        device_ids: Device IDs (serial numbers) of the removed devices.
+    """
+    if not device_ids or "recorder" not in hass.config.components:
+        return
+    device_registry = dr.async_get(hass)
+    device_ids = set(device_ids) - {
+        identifier
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.entry_id != entry_id
+        for device_entry in dr.async_entries_for_config_entry(
+            device_registry, entry.entry_id
+        )
+        for domain, identifier in device_entry.identifiers
+        if domain == DOMAIN
+    }
+    keys = {
+        statistic.key
+        for signature in MODEL_SIGNATURES
+        if signature.device_profile is not None
+        for statistic in signature.device_profile.statistics
+    }
+    statistic_ids = sorted(
+        build_statistic_id(device_id, key) for device_id in device_ids for key in keys
+    )
+    if statistic_ids:
+        _LOGGER.debug("Clearing statistics of removed devices: %s", statistic_ids)
+        get_instance(hass).async_clear_statistics(statistic_ids)
+
+
+def find_entity_id(
+    registry: er.EntityRegistry,
+    domain: str,
+    entry_id: str | None,
+    device_id: str,
+    key: str,
+) -> str | None:
+    """Return the entity_id registered for an entity of this integration, or None.
+
+    Looks the entity up by its unique_id (see build_unique_id), not by the entity_id
+    built from the key: HA appends "_2" to the entity_id when the same device is set up
+    via a second hub, and users may rename it. Because the unique_id contains the
+    entry_id, only entities of this config entry are found.
+
+    Args:
+        registry: The entity registry.
+        domain: Entity domain (e.g. "sensor").
+        entry_id: Owning config entry ID, or None if unavailable.
+        device_id: Device ID (serial number).
+        key: Entity key as passed to build_unique_id, including any platform
+            suffix (e.g. "getOHW_select").
+    """
+    return registry.async_get_entity_id(
+        domain, DOMAIN, build_unique_id(entry_id, device_id, key)
+    )
+
+
+def get_model_supported_keys(
+    model_info: SyrConnectModel, platform: str, global_supported_keys: set[str]
+) -> set[str]:
+    """Return the supported-keys allowlist for a platform, scoped to the detected model.
+
+    If the detected model has a `device_profile` (from a `devices/<name>.py` file,
+    see `models.MODEL_SIGNATURES`), its allowlist for the platform is used as a
+    POSITIVE, device-specific allowlist instead of `global_supported_keys`.
+    Rebranded variants of the same hardware share one profile.
     This is deliberately an allowlist, not an exclusion list — the global
-    const.py lists cover ~90 different models, and new/unexpected keys can
+    allowlists of the platform modules cover ~90 different models, and new/unexpected keys can
     show up in any device's API response at any time, so only explicitly
-    confirmed keys are trusted per device. Falls back to `global_known_keys`
-    unchanged when no override file exists for the model, or it doesn't
-    define this platform's set at all (an explicit empty set is honored as
-    "no entities of this platform for this model", not a fallback trigger).
+    confirmed keys are trusted per device. Falls back to `global_supported_keys`
+    unchanged when the model has no profile, or its profile has no allowlist for
+    this platform (an explicit empty set is honored as "no entities of this
+    platform for this model", not a fallback trigger).
 
     Args:
         model_info: Result of `models.detect_model()`.
-        platform: Entity domain string (e.g. "sensor", "select", "switch").
-        global_known_keys: The platform's full/default allowlist.
+        platform: Entity domain string (e.g. "sensor", "select", "switch"); the name
+            of a `SyrConnectDeviceProfile` allowlist field.
+        global_supported_keys: The platform's full/default allowlist.
 
     Returns:
         The effective allowlist to use for this device.
     """
-    name = model_info.get("device_file") or model_info.get("name")
-    if not name:
-        return global_known_keys
-    device_module = _DEVICE_MODULES.get(name)
-    if device_module is None:
-        return global_known_keys
-    device_keys = getattr(device_module, f"{platform.upper()}_KNOWN_KEYS", None)
+    profile = model_info.device_profile
+    if profile is None:
+        return global_supported_keys
+    # No default: a platform without a profile field is a programming error.
+    device_keys: AbstractSet[str] | None = getattr(profile, platform)
     # None means "not defined" -> fall back. An explicit empty set is a valid
     # override meaning "this model has none of this platform's entities".
     if device_keys is None:
-        return global_known_keys
+        return global_supported_keys
     return set(device_keys)
 
 
 def cleanup_removed_devices(
     hass: HomeAssistant,
-    coordinator_data: dict[str, Any],
+    coordinator_data: SyrConnectCoordinatorData | None,
     entry_id: str,
 ) -> None:
-    """Detach HA devices for this entry that no longer exist in the SYR Connect account.
+    """Remove HA devices for this entry that no longer exist in the SYR Connect account.
 
     If a device is deleted from the account (e.g. by another user of the same
     hub) it simply stops appearing in `coordinator_data["devices"]`, but
     nothing else ever notices - the device (and all its entities) would
     otherwise stay in Home Assistant forever. This compares the device
     registry entries owned by `entry_id` against the serial numbers
-    currently returned by the coordinator and detaches any that disappeared.
+    currently returned by the coordinator and removes any that disappeared,
+    together with their entities.
 
-    Detaching only this `entry_id` (rather than a hard delete) is important
-    because the same physical device can be shared across config entries
-    (e.g. visible via two SYR Connect accounts); Home Assistant only fully
-    removes the device - cascading its entities - once no config entry
-    references it anymore.
+    Every config entry has a device of its own in the registry, also when the
+    same physical device is visible via two SYR Connect accounts, so removing
+    it leaves the device of the other entry untouched.
 
     Args:
         hass: Home Assistant instance.
@@ -321,26 +471,40 @@ def cleanup_removed_devices(
         entry_id: Owning config entry ID.
     """
     try:
-        current_ids = {d["id"] for d in (coordinator_data or {}).get("devices", []) if d.get("id")}
+        current_ids = {
+            d["id"]
+            for d in (coordinator_data.get("devices", []) if coordinator_data else [])
+            if d.get("id")
+        }
+        removed_ids: set[str] = set()
         device_registry = dr.async_get(hass)
-        for device_entry in dr.async_entries_for_config_entry(device_registry, entry_id):
+        for device_entry in dr.async_entries_for_config_entry(
+            device_registry, entry_id
+        ):
             device_id = next(
-                (identifier for domain, identifier in device_entry.identifiers if domain == DOMAIN),
+                (
+                    identifier
+                    for domain, identifier in device_entry.identifiers
+                    if domain == DOMAIN
+                ),
                 None,
             )
             if device_id is not None and device_id not in current_ids:
                 _LOGGER.debug("Removing stale device from registry: %s", device_id)
-                device_registry.async_update_device(device_entry.id, remove_config_entry_id=entry_id)
+                device_registry.async_remove_device(device_entry.id)
+                removed_ids.add(device_id)
+        clear_device_statistics(hass, entry_id, removed_ids)
     except Exception:
         _LOGGER.exception("Failed to cleanup removed devices from registry")
 
 
 def registry_cleanup(
     hass: HomeAssistant,
-    coordinator_data: dict[str, Any],
+    coordinator_data: SyrConnectCoordinatorData | None,
     domain: str,
     allowed_keys: set[str] | None = None,
     entry_id: str | None = None,
+    hidden_keys: Callable[[dict[str, Any], SyrConnectModel], set[str]] | None = None,
 ) -> None:
     """Remove previously-registered entities from the entity registry.
 
@@ -348,11 +512,9 @@ def registry_cleanup(
     any whose key is NOT in allowed_keys. If allowed_keys is None,
     nothing is removed.
 
-    For sensor entities, also removes entries for keys that are conditionally
-    hidden (i.e. listed in _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_*) when
-    is_sensor_visible returns False for the current device status. This
-    covers keys that are absent from the device status entirely as well as keys
-    that are present with an empty or zero value.
+    With `hidden_keys`, also removes the entities of the keys it returns for the
+    current device status (the sensor platform passes the sensors that never become
+    an entity and the keys of the other cartridge types).
 
     Args:
         hass: Home Assistant instance.
@@ -360,47 +522,92 @@ def registry_cleanup(
         domain: Entity domain string (e.g. "sensor").
         allowed_keys: Set of permitted sensor keys. Entities whose key is not
             in this set will be removed from the entity registry.
-        entry_id: Owning config entry ID. When provided, only entities
-            registered under this entry are considered. Without it, entities
-            belonging to a *different* hub that happens to share the same
-            device_id (e.g. the same physical device visible from two hubs)
-            could be mistaken for stale entries and removed.
+        entry_id: Owning config entry ID. Only entities registered under this
+            entry are considered; entities of a *different* hub that shares the
+            same device_id (the same physical device visible from two hubs) are
+            not ours to remove. Without it, nothing is removed.
+        hidden_keys: Returns the keys whose entities are hidden for a device
+            status and model; they are removed as well.
     """
-    if allowed_keys is None:
+    if allowed_keys is None or entry_id is None:
         return
     try:
         registry = er.async_get(hass)
+        # Only the entities of this config entry and of the platform being cleaned up
+        # (sensor cleanup must not touch a select of the same device). The registry
+        # looks them up by config entry, without scanning the whole registry.
+        platform_entries = [
+            entry
+            for entry in er.async_entries_for_config_entry(registry, entry_id)
+            if entry.domain == domain
+        ]
 
-        # Build the set of conditionally visible sensor keys once, outside the device loop.
-        # getLOT/getOHW are added explicitly since their visibility depends on getCRT
-        # (cross-key rule in is_sensor_visible), not on their own value being empty.
-        _conditional_keys = (
-            _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_VALUE
-            | _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_STRING
-            | _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_IPADDRESS
-            | {"getLOT", "getOHW"}
-        ) - _SYR_CONNECT_SENSOR_EXCLUDED
-
-        for device in (coordinator_data or {}).get("devices", []):
+        for device in coordinator_data.get("devices", []) if coordinator_data else []:
             device_id = device.get("id")
             if not device_id:
                 continue
-            prefix = f"{domain}.{DOMAIN}_{device_id.lower()}_"
+
+            # An empty status means it could not be fetched yet (e.g. a temporary
+            # failure at startup), not that the device lost all its keys. Removing
+            # entities now would drop their registry customizations (name, area, ...).
+            status = device.get("status", {})
+            if not status:
+                _LOGGER.debug(
+                    "No status for device %s yet; skipping %s registry cleanup",
+                    device_id,
+                    domain,
+                )
+                continue
+
+            # While the cloud reports the device offline (dst 0/1, available=False) its status
+            # says nothing about which entities it has: the measurements are empty strings
+            # (docs/known_issues_xml_api.md, issue 2), and a never-online device reports little
+            # more than getSRN, so detect_model may pick the wrong model and key list.
+            if not device.get("available", True):
+                _LOGGER.debug(
+                    "Device %s is offline; skipping %s registry cleanup",
+                    device_id,
+                    domain,
+                )
+                continue
 
             # Scope the allowlist to the detected model (falls back to allowed_keys
             # unchanged for models that haven't opted into per-model key lists).
-            status = device.get("status", {})
-            model_info = detect_model(status)
-            device_allowed_keys = get_model_known_keys(model_info, domain, allowed_keys)
+            model_info = get_device_model(device)
+            device_allowed_keys = get_model_supported_keys(
+                model_info, domain, allowed_keys
+            )
             allowed_lower = {k.lower() for k in device_allowed_keys}
 
             # Remove entities whose key is no longer in the allowed set.
-            for entry in list(registry.entities.values()):
-                if entry_id is not None and entry.config_entry_id != entry_id:
+            #
+            # The key is taken from the unique_id, not from the entity_id. Both are set by
+            # the entities of this integration, but only the unique_id is stable:
+            # - unique_id: "<entry_id>_<device_id>_<key>" (see build_unique_id), e.g.
+            #   "01J..._206AAA12345_getFLO". Home Assistant never changes it.
+            # - entity_id: "<domain>.conelclearpro_connect_<device_id>_<key>" (see build_entity_id),
+            #   e.g. "sensor.conelclearpro_connect_206aaa12345_getflo". It is not reliable: if the
+            #   same device is set up via a second hub, HA appends "_2" because the
+            #   entity_id is already taken, and users may rename it. Reading the key from
+            #   it would turn "getflo_2" or a renamed "..._durchfluss" into an unknown key
+            #   and remove a valid entity (with its name, area, ... customizations) on
+            #   every setup.
+            #
+            # All ids of this device and config entry start with the same prefix,
+            # "<entry_id>_<device_id>_". Comparisons are case-insensitive because
+            # switch/update build their unique_id lowercased.
+            unique_id_prefix = build_unique_id(entry_id, device_id, "").lower()
+            for entry in platform_entries:
+                # Only entities of this device.
+                unique_id = str(entry.unique_id).lower()
+                if not unique_id.startswith(unique_id_prefix):
                     continue
-                if not entry.entity_id.startswith(prefix):
-                    continue
-                key_lower = entry.entity_id[len(prefix):]
+                # What remains is the key. Some platforms add their own suffix to keep
+                # unique_ids distinct from a sensor with the same key: "getRTM_select",
+                # "getbuz_switch", "getnot_update". Strip it to get the plain key ("getrtm").
+                key_lower = unique_id[len(unique_id_prefix) :].removesuffix(
+                    f"_{domain}"
+                )
                 if key_lower not in allowed_lower:
                     _LOGGER.debug(
                         "Removing unlisted %s from registry: %s",
@@ -412,26 +619,48 @@ def registry_cleanup(
                     except Exception:
                         _LOGGER.exception("Failed to remove entity %s", entry.entity_id)
 
-            # Remove conditionally hidden sensor entities based on current device status.
-            if domain == "sensor":
-                for key in _conditional_keys:
-                    value = status.get(key)
-                    if not is_sensor_visible(status, key, value):
-                        entity_id = f"{prefix}{key.lower()}"
-                        existing = registry.async_get(entity_id)
-                        if existing is not None and (
-                            entry_id is None or existing.config_entry_id == entry_id
-                        ):
-                            _LOGGER.debug(
-                                "Removing conditionally hidden sensor from registry: %s",
-                                entity_id,
-                            )
-                            try:
-                                registry.async_remove(entity_id)
-                            except Exception:
-                                _LOGGER.exception("Failed to remove entity %s", entity_id)
+            # Remove the entities the platform hides for the current device status. Found by
+            # unique_id, so a renamed or "_2"-suffixed entity is removed as well; the unique_id
+            # contains the entry_id, so only entities of this config entry are found.
+            for key in (
+                hidden_keys(status, model_info) if hidden_keys is not None else ()
+            ):
+                entity_id = find_entity_id(registry, domain, entry_id, device_id, key)
+                if entity_id is not None:
+                    _LOGGER.debug(
+                        "Removing conditionally hidden %s from registry: %s",
+                        domain,
+                        entity_id,
+                    )
+                    try:
+                        registry.async_remove(entity_id)
+                    except Exception:
+                        _LOGGER.exception("Failed to remove entity %s", entity_id)
     except Exception:
-        _LOGGER.exception("Failed to cleanup excluded %s entities from registry", domain)
+        _LOGGER.exception(
+            "Failed to cleanup excluded %s entities from registry", domain
+        )
+
+
+def is_empty_ip(value: Any) -> bool:
+    """Return True if an IP address value is missing, blank or the unspecified address.
+
+    Formats:
+    - Missing or blank: None, "" -> True
+    - Unspecified address (Trio DFR/LS without an address): "0.0.0.0", "::" -> True
+    - Any other value, also a hostname: "192.168.1.10" -> False
+    """
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if text == "":
+        return True
+    try:
+        return ipaddress.ip_address(text).is_unspecified
+    except ValueError:
+        return False
 
 
 def get_current_mac(status: dict[str, Any]) -> str | None:
@@ -449,18 +678,7 @@ def get_current_mac(status: dict[str, Any]) -> str | None:
         return None
 
     def is_not_empty_ip(key: str) -> bool:
-        val = status.get(key)
-        if val is None:
-            return False
-        if isinstance(val, str):
-            s = val.strip()
-            # Treat empty string and the unspecified address 0.0.0.0 as empty
-            # Syr "Trio DFR/LS" sets IP as "0.0.0.0", where others do not.
-            if s == "" or s == "0.0.0.0":
-                return False
-            return True
-        return True
-
+        return not is_empty_ip(status.get(key))
 
     # Priority selection for MAC address:
     # 1. If getIPA (primary IP) is set and not empty, use getMAC (primary MAC)
@@ -478,12 +696,12 @@ def get_current_mac(status: dict[str, Any]) -> str | None:
         wfs_val = status.get("getWFS")
         # getWFS meaning:
         #   2 = Wi-Fi connected
-        #   1 = Wi-Fi not connected
-        #   0 = unknown or not available
+        #   1 = Wi-Fi connecting
+        #   0 = Wi-Fi not connected
         if wfs_val is not None:
             try:
                 wfs_int = int(wfs_val)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 wfs_int = None
         else:
             wfs_int = None
@@ -504,7 +722,7 @@ def get_current_mac(status: dict[str, Any]) -> str | None:
     return None
 
 
-def get_sensor_avo_value(value: str | int | float) -> float | None:
+def get_sensor_avo_value(value: Any) -> float | None:
     """Extract numeric flow value from strings like '1655mL' -> 1.655 (L).
 
     The getAVO sensor returns flow values in the format '1655mL', '0mL', etc.
@@ -530,29 +748,30 @@ def get_sensor_avo_value(value: str | int | float) -> float | None:
 
     # Pattern to match values like '1655mL', '0mL', etc.
     # Extract the numeric part before 'mL'
-    match = re.match(r'^(\d+)mL$', value)
+    match = re.match(r"^(\d+)mL$", value)
     if match:
         try:
             flow_ml = int(match.group(1))
             flow_l = flow_ml / 1000  # Convert mL to L
             _LOGGER.debug("Extracted flow value from '%s' to %.3f L", value, flow_l)
-            return flow_l
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
+        else:
+            return flow_l
 
     # If pattern doesn't match, try to extract any number at the start and convert
-    match = re.match(r'^(\d+)', value)
+    match = re.match(r"^(\d+)", value)
     if match:
         try:
             flow_ml = int(match.group(1))
             return flow_ml / 1000  # Convert mL to L
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
 
     return None
 
 
-def get_sensor_vol_value(value: str | int | float) -> str | int | float | None:
+def get_sensor_vol_value(value: str | float) -> str | int | float | None:
     """Clean sensor value by removing prefixes like 'Vol[L]6530' -> '6530'.
 
     Some devices send values with prefixes that include the parameter name
@@ -582,8 +801,8 @@ def get_sensor_vol_value(value: str | int | float) -> str | int | float | None:
         return None
 
     # Pattern to match values like 'Vol[L]6530', 'Temp[C]25', etc.
-    # Format: word characters, optional brackets with content, then the actual value
-    match = re.match(r'^[A-Za-z]+\[[^\]]+\](.+)$', value)
+    # Format: letters, brackets with content, then the actual value
+    match = re.match(r"^[A-Za-z]+\[[^\]]+\](.+)$", value)
     if match:
         cleaned = match.group(1).strip()
         _LOGGER.debug("Cleaned sensor value from '%s' to '%s'", value, cleaned)
@@ -592,7 +811,7 @@ def get_sensor_vol_value(value: str | int | float) -> str | int | float | None:
     return value
 
 
-def get_sensor_lng_value(value: str | int | float) -> str | int | float | None:
+def get_sensor_lng_value(value: str | float) -> str | int | float | None:
     """Extract the leading integer from a getLNG value.
 
     Some devices append a human-readable annotation to the numeric value,
@@ -624,12 +843,13 @@ def get_sensor_lng_value(value: str | int | float) -> str | int | float | None:
     token = value.split(maxsplit=1)[0]
     try:
         int(token)
-        return token
     except ValueError:
         return value
+    else:
+        return token
 
 
-def get_sensor_net_value(value: str | int | float) -> float | None:
+def get_sensor_net_value(value: Any) -> float | None:
     """Parse mains voltage (getNET) supporting three formats.
 
     Formats supported:
@@ -646,7 +866,7 @@ def get_sensor_net_value(value: str | int | float) -> float | None:
     if isinstance(value, (int | float)):
         try:
             return round(float(value) / 100.0, 2)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
     if not isinstance(value, str):
@@ -662,26 +882,44 @@ def get_sensor_net_value(value: str | int | float) -> float | None:
             if token.upper().endswith("V"):
                 raw = token[:-1]  # strip trailing 'V'
                 try:
-                    return round(float(raw.replace(',', '.')), 2)
-                except (ValueError, TypeError):
+                    return round(float(raw.replace(",", ".")), 2)
+                except ValueError, TypeError:
                     return None
         return None
 
     # Safe-Tech+ format with comma decimal, e.g. "11,86"
-    if ',' in s:
+    if "," in s:
         try:
-            return round(float(s.replace(',', '.')), 2)
-        except (ValueError, TypeError):
+            return round(float(s.replace(",", ".")), 2)
+        except ValueError, TypeError:
             return None
 
     # Digits-only Trio DFR/LS format "363" -> divide by 100
     if s.isdigit():
         try:
             return round(int(s) / 100.0, 2)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
 
     return None
+
+
+def host_has_port(host: object) -> bool:
+    """Return True if *host* ends with an explicit port, e.g. "192.168.1.10:5333".
+
+    A plain IPv6 address such as "fe80::1" is not a host with port, although it ends
+    with ":<digits>". Used by `is_valid_host` and to tell the user specifically that
+    the port must be left out (the local API always uses its fixed port).
+    """
+    if not isinstance(host, str):
+        return False
+    try:
+        ipaddress.ip_address(host.strip())
+    except ValueError:
+        pass
+    else:
+        return False
+    return bool(re.match(r"^.+:\d+$", host.strip()))
 
 
 def is_valid_host(host: str) -> bool:
@@ -707,12 +945,13 @@ def is_valid_host(host: str) -> bool:
     # host:port pattern below.
     try:
         ipaddress.ip_address(host)
-        return True
-    except Exception:
+    except ValueError:
         pass
+    else:
+        return True
 
     # Reject explicit host:port
-    if re.match(r"^.+:\d+$", host):
+    if host_has_port(host):
         return False
 
     # Hostname validation: length and label rules
@@ -720,7 +959,7 @@ def is_valid_host(host: str) -> bool:
     return bool(re.match(hostname_pattern, host))
 
 
-def get_sensor_bat_value(value: str | int | float) -> float | None:
+def get_sensor_bat_value(value: Any) -> float | None:
     """Parse battery voltage supporting two formats.
 
     Formats supported:
@@ -737,7 +976,7 @@ def get_sensor_bat_value(value: str | int | float) -> float | None:
     if isinstance(value, (int | float)):
         try:
             return round(float(value) / 100.0, 2)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
 
     if not isinstance(value, str):
@@ -747,26 +986,26 @@ def get_sensor_bat_value(value: str | int | float) -> float | None:
     if s == "":
         return None
 
-    # If space-separated Safe-T+ format, take firstech token
+    # If space-separated Safe-T+ format, take the first token
     if " " in s:
         first = s.split()[0]
         try:
-            return round(float(first.replace(',', '.')), 2)
-        except (ValueError, TypeError):
+            return round(float(first.replace(",", ".")), 2)
+        except ValueError, TypeError:
             return None
 
     # Single-token Safe-Tech+ format with comma decimal, e.g. "9,36"
-    if ',' in s:
+    if "," in s:
         try:
-            return round(float(s.replace(',', '.')), 2)
-        except (ValueError, TypeError):
+            return round(float(s.replace(",", ".")), 2)
+        except ValueError, TypeError:
             return None
 
     # Digits-only Trio DFR/LS format "363" -> divide by 100
     if s.isdigit():
         try:
             return round(int(s) / 100.0, 2)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
 
     # No other variants supported. Return None.
@@ -815,11 +1054,25 @@ def get_sensor_rtm_value(status: dict[str, Any]) -> str | None:
         # Strict validation: hours 0-23, minutes 0-59
         if 0 <= h <= 23 and 0 <= m <= 59:
             return f"{h:02d}:{m:02d}"
-    except (ValueError, TypeError) as err:
+    except (ValueError, TypeError, OverflowError) as err:
         _LOGGER.debug("Failed to parse regeneration time from separate values: %s", err)
         return None
 
     return None
+
+
+def is_device_offline(dst: Any) -> bool:
+    """Return True if the cloud device state means offline.
+
+    dst="0" never online, dst="1" offline (2 = online, 3 = standby).
+
+    Args:
+        dst: The ``dst`` value of a status response
+
+    Returns:
+        True if the device is not reachable via the cloud
+    """
+    return str(dst if dst is not None else "").strip() in ("0", "1")
 
 
 def get_sensor_iwh_value(status: dict[str, Any]) -> int | float | None:
@@ -828,8 +1081,8 @@ def get_sensor_iwh_value(status: dict[str, Any]) -> int | float | None:
     Rules:
     1. If `getIWH` exists and is numeric, return it (int if whole).
     2. If `getIWH` missing/empty but `getCND` exists and is numeric,
-       default `getWHU` to 0 when missing and compute `getIWH = getCND / 33`.
-    3. Return None when values are missing or unparseable.
+       default `getWHU` to 0 when missing and compute `getIWH = getCND / 35` (°dH).
+    3. Return None when values are missing or unparsable.
     """
     if not status:
         return None
@@ -841,13 +1094,11 @@ def get_sensor_iwh_value(status: dict[str, Any]) -> int | float | None:
         try:
             val = float(raw_iwh)
             # Persist normalized numeric getiwh back into status
-            try:
+            with contextlib.suppress(Exception):
                 status["getIWH"] = int(val) if val.is_integer() else val
-            except Exception:
-                pass
             # Return int when it's an exact whole number
             return int(val) if val.is_integer() else val
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             # Fall through to fallback derivation
             pass
 
@@ -857,30 +1108,23 @@ def get_sensor_iwh_value(status: dict[str, Any]) -> int | float | None:
         return None
     try:
         cnd = float(raw_cnd)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
     # Normalize/ensure getWHU exists; default to 0 when missing or invalid
     raw_whu = status.get("getWHU")
     try:
         whu = int(float(raw_whu)) if (raw_whu is not None and raw_whu != "") else 0
-    except (ValueError, TypeError):
+    except ValueError, TypeError, OverflowError:
         whu = 0
-    try:
+    with contextlib.suppress(Exception):
         status["getWHU"] = whu
-    except Exception:
-        pass
 
-    # Compute and persist getIWH
-    # Calculation notes:
-    # - 1 °dH is equivalent to approximately 30-35 µS/cm per scientific articles.
-    # - However, the more precise standard value for clean, unpolluted fresh water appears to be 1 °dH = 33 µS/cm.
-    iwh = cnd / 33.0
+    # Compute and persist getIWH in °dH with the factor SYR uses
+    iwh = cnd / _conelclearpro_connect_SENSOR_CND_PER_DH
     iwh_out = int(iwh) if iwh.is_integer() else iwh
-    try:
+    with contextlib.suppress(Exception):
         status["getIWH"] = iwh_out
-    except Exception:
-        pass
     return iwh_out
 
 
@@ -903,7 +1147,11 @@ def set_sensor_rtm_value(status: dict[str, Any], option: str) -> list[tuple[str,
     if status is not None:
         raw_rth = status.get("getRTH")
         raw_rtm = status.get("getRTM")
-        if (raw_rth is None or raw_rth == "") and isinstance(raw_rtm, str) and ":" in raw_rtm:
+        if (
+            (raw_rth is None or raw_rth == "")
+            and isinstance(raw_rtm, str)
+            and ":" in raw_rtm
+        ):
             combined_mode = True
 
     if combined_mode:
@@ -930,7 +1178,7 @@ def get_sensor_ab_value(status: dict[str, Any]) -> bool | None:
     Returns:
         - True if valve is closed
         - False if valve is open
-        - None if unknown/unparseable
+        - None if unknown/unparsable
 
     The value stored under getAB may be a plain raw value from the API
     (string, int, bool). The device itself signals a pending change via the
@@ -987,22 +1235,22 @@ def _parse_ab_raw(val: Any) -> bool | None:
                     return True
                 if ival == 1:
                     return False
-    except (ValueError, TypeError, AttributeError) as err:
+    except (ValueError, TypeError, AttributeError, OverflowError) as err:
         _LOGGER.debug("Failed to parse getAB value: %s", err)
         return None
 
     return None
 
 
-def get_sensor_ala_map(status: dict[str, Any], raw_code: Any) -> tuple[str | None, str]:
+def get_sensor_ala_map(model: SyrConnectModel, raw_code: Any) -> tuple[str | None, str]:
     """Map raw getALA alarm code to internal translation key.
 
     Args:
-        status: Flattened device status dict (used to detect model).
+        model: Detected model of the device (selects the alarm code family).
         raw_code: Raw code value from the API (e.g. "FF", "A5", "0").
 
     Returns:
-        Internal translation key (e.g. "no_alarm", "alarm_low_salt") or None if unknown.
+        Internal translation key (e.g. "no_alarm", "alarm_salt_supply_low") or None if unknown.
     """
     if raw_code is None:
         return (None, "")
@@ -1011,32 +1259,178 @@ def get_sensor_ala_map(status: dict[str, Any], raw_code: Any) -> tuple[str | Non
     code = str(raw_code)
     code_upper = code.strip().upper()
 
-    # Detect model from status (expect flattened attributes)
-    try:
-        model_info = detect_model(status or {})
-    except (ValueError, KeyError, AttributeError, TypeError) as err:
-        _LOGGER.debug("Failed to detect model for ALA mapping: %s", err)
-        return (None, code)
-
     # Model-specific families take precedence; every other model (including unknown ones) uses the generic codes.
-    model = str(model_info.get("name") or "")
-    codes = _SYR_CONNECT_SENSOR_ALA_CODES_BY_MODEL.get(model_info.get("device_file") or model)
-    if codes is None:
-        # Callers may pass a bare {"name": ...}; resolve its device_file from the signature.
-        signature = next((s for s in MODEL_SIGNATURES if s["name"] == model), None)
-        codes = _SYR_CONNECT_SENSOR_ALA_CODES_BY_MODEL.get((signature or {}).get("device_file") or model)
-    if codes is None:
-        codes = _SYR_CONNECT_SENSOR_ALA_CODES_GENERIC
+    profile = model.device_profile
+    codes = (
+        profile.ala_codes
+        if profile is not None and profile.ala_codes is not None
+        else _conelclearpro_connect_SENSOR_ALA_CODES_GENERIC
+    )
 
     mapped = codes.get(code_upper)
     return (mapped, code) if mapped is not None else (None, code)
 
 
-def get_sensor_not_map(status: dict[str, Any], raw_code: Any) -> tuple[str | None, str]:
+def get_whu_unit(model: SyrConnectModel, raw_code: Any) -> str | None:
+    """Water hardness unit (getWHU): raw code -> unit of the model's code family.
+
+    Args:
+        model: Detected model of the device (selects the code family).
+        raw_code: Raw code value from the API (e.g. 0, "1", "2.0").
+
+    Returns:
+        The unit (e.g. "°dH"), or None for a missing or unknown code and for a model
+        without water hardness unit codes.
+    """
+    profile = model.device_profile
+    code = _whu_code(raw_code)
+    if code is None or profile is None or profile.whu_units is None:
+        return None
+    return profile.whu_units.get(code)
+
+
+def get_hardness_divisor(model: SyrConnectModel, raw_code: Any) -> int:
+    """Divisor of the water hardness values (getIWH, getOWH) for a getWHU code.
+
+    Formats:
+    - NeoSoft, mmol/l (getWHU 1): "15" -> 1.5 mmol/l
+    - Other units and models: "15" -> 15
+
+    Args:
+        model: Detected model of the device (selects the code family).
+        raw_code: Raw getWHU value from the API (e.g. 0, "1", "2.0").
+
+    Returns:
+        The divisor, 1 if the device reports the values unscaled.
+    """
+    profile = model.device_profile
+    code = _whu_code(raw_code)
+    if code is None or profile is None:
+        return 1
+    return profile.hardness_divisors.get(code, 1)
+
+
+def get_hardness_range(
+    model: SyrConnectModel, key: str, raw_code: Any
+) -> tuple[int, int, int] | None:
+    """Return the range of a water hardness select for the unit (getWHU), or None.
+
+    Args:
+        model: Detected model of the device (its profile holds the ranges).
+        key: The water hardness key, e.g. "getIWH".
+        raw_code: Raw getWHU value from the API (e.g. 0, "1", "2.0").
+
+    Returns:
+        (lowest, highest, step) in the unit of the code, or None if the model has no
+        range for the key and unit.
+    """
+    profile = model.device_profile
+    code = _whu_code(raw_code)
+    if profile is None or code is None:
+        return None
+    return profile.hardness_ranges.get(key, {}).get(code)
+
+
+def get_hardness_factor(model: SyrConnectModel, raw_code: Any) -> float:
+    """Factor from the water hardness the device keeps to the unit of the display (getWHU).
+
+    Formats:
+    - MuCo filling, °fH (getWHU 2): 1.78480457 (the device keeps °dH)
+    - Other models, and a missing or unknown unit: 1.0 (the device keeps the unit)
+
+    Args:
+        model: Detected model of the device (its profile tells the unit of the values).
+        raw_code: Raw getWHU value from the API (e.g. 0, "1", "2.0").
+
+    Returns:
+        The number of display units per unit of the device value.
+    """
+    profile = model.device_profile
+    if profile is None or not profile.hardness_in_dh:
+        return 1.0
+    unit = get_whu_unit(model, raw_code)
+    if unit is None:
+        return 1.0
+    return WHU_FACTORS_FROM_DH.get(unit, 1.0)
+
+
+def round_hardness(value: float) -> int:
+    """Round a converted water hardness to a whole number, halves up."""
+    return math.floor(value + 0.5)
+
+
+def _whu_code(raw_code: Any) -> int | None:
+    """Return the getWHU code as integer, or None for a missing or invalid value."""
+    if raw_code is None:
+        return None
+    try:
+        return int(float(raw_code))
+    except ValueError, TypeError, OverflowError:
+        return None
+
+
+def get_cartridge_keys(model: SyrConnectModel) -> set[str]:
+    """Return the keys that only apply to one cartridge type (getCRT) of the model.
+
+    The device profile maps each cartridge type to its key (`cartridge_keys`):
+    - MuCo filling: HWE -> getOHW, HVE/HVE+ -> getLOT
+    - All in One +: HWE -> getOWH
+
+    Args:
+        model: Detected model of the device.
+
+    Returns:
+        The keys, empty for a model without cartridge types.
+    """
+    profile = model.device_profile
+    return set(profile.cartridge_keys.values()) if profile is not None else set()
+
+
+def get_cartridge_type_key(
+    model: SyrConnectModel, status: dict[str, Any]
+) -> str | None:
+    """Return the key of the reported cartridge type (getCRT), or None.
+
+    Args:
+        model: Detected model of the device.
+        status: The flattened device status.
+
+    Returns:
+        The key the device profile maps the cartridge type to, or None if the model has
+        no key for it.
+    """
+    profile = model.device_profile
+    crt_value = status.get("getCRT")
+    if profile is None or crt_value is None:
+        return None
+    return profile.cartridge_keys.get(str(crt_value).strip())
+
+
+def get_cartridge_key(
+    model: SyrConnectModel, status: dict[str, Any], supported_keys: AbstractSet[str]
+) -> str | None:
+    """Return the cartridge key that becomes an entity for the device, or None.
+
+    Args:
+        model: Detected model of the device.
+        status: The flattened device status.
+        supported_keys: The keys the model lists for the platform.
+
+    Returns:
+        The key of the reported cartridge type (see `get_cartridge_type_key`), or None
+        if there is none, or the model does not list it, or it has no value.
+    """
+    key = get_cartridge_type_key(model, status)
+    if key is None or key not in supported_keys or status.get(key) in (None, ""):
+        return None
+    return key
+
+
+def get_sensor_not_map(model: SyrConnectModel, raw_code: Any) -> tuple[str | None, str]:
     """Map raw getNOT notification code to internal translation key.
 
     Args:
-        status: Device status dict (unused but kept for signature parity)
+        model: Detected model of the device (unused but kept for signature parity)
         raw_code: Raw code value from the API (e.g. "01", "FF")
 
     Returns:
@@ -1048,15 +1442,15 @@ def get_sensor_not_map(status: dict[str, Any], raw_code: Any) -> tuple[str | Non
 
     code = str(raw_code)
     code_upper = code.strip().upper()
-    mapped = _SYR_CONNECT_SENSOR_NOT_CODES_GENERIC.get(code_upper)
+    mapped = _conelclearpro_connect_SENSOR_NOT_CODES_GENERIC.get(code_upper)
     return (mapped, code) if mapped is not None else (None, code)
 
 
-def get_sensor_wrn_map(status: dict[str, Any], raw_code: Any) -> tuple[str | None, str]:
+def get_sensor_wrn_map(model: SyrConnectModel, raw_code: Any) -> tuple[str | None, str]:
     """Map raw getWRN warning code to internal translation key.
 
     Args:
-        status: Device status dict (unused but kept for signature parity)
+        model: Detected model of the device (unused but kept for signature parity)
         raw_code: Raw code value from the API (e.g. "01", "FF")
 
     Returns:
@@ -1068,11 +1462,13 @@ def get_sensor_wrn_map(status: dict[str, Any], raw_code: Any) -> tuple[str | Non
 
     code = str(raw_code)
     code_upper = code.strip().upper()
-    mapped = _SYR_CONNECT_SENSOR_WRN_CODES_GENERIC.get(code_upper)
+    mapped = _conelclearpro_connect_SENSOR_WRN_CODES_GENERIC.get(code_upper)
     return (mapped, code) if mapped is not None else (None, code)
 
 
-def build_set_ab_command(status: dict[str, Any], closed: bool) -> tuple[str, Any] | None:
+def build_set_ab_command(
+    status: dict[str, Any], closed: bool
+) -> tuple[str, Any] | None:
     """Build the appropriate (`setAB`, value) command for desired closed state.
 
     This function mirrors the device's own format for `getAB` when sending `setAB`:
@@ -1083,7 +1479,7 @@ def build_set_ab_command(status: dict[str, Any], closed: bool) -> tuple[str, Any
     Using the device's native format prevents potential parsing errors or
     firmware issues when the device receives commands in an unexpected format.
 
-    Returns a tuple (set_key, value), or None when the format is unrecognised.
+    Returns a tuple (set_key, value), or None when the format is unrecognized.
     """
     raw = None
     if status:
@@ -1117,133 +1513,25 @@ def build_set_ab_command(status: dict[str, Any], closed: bool) -> tuple[str, Any
     return None
 
 
-def is_sensor_visible(status: dict[str, Any], key: str, value: Any) -> bool:
-    """Decide whether a reported status key/value should produce a sensor.
+def get_api_locale(language: str | None, country: str | None) -> str:
+    """Build the locale sent to the SYR Connect cloud from the Home Assistant settings.
 
-    This function centralizes all visibility/exclusion rules so both the
-    entity-creation code and diagnostics produce the same set of visible
-    sensors. It is intentionally defensive about input types and accepts
-    values that may be strings, numbers, booleans or None.
+    Takes `hass.config.language` (e.g. `de`, `en-GB`, `zh-Hans`) and `hass.config.country`
+    (e.g. `DE`). A region in the language wins; otherwise the country is used, so `de` + `AT`
+    gives `de-AT`. Scripts such as `Hans` are not regions and are dropped.
 
-    Rules (applied in order):
-    - Group-controlled keys: keys matching getPVx, getPTx, getPFx, getPNx,
-        getPMx, getPWx, getPBx, getPRx are only visible when the device's
-        corresponding getPAx flag is truthy (1, "true", "on", etc.).
-    - Special-case salt counters (getCS1/2/3): shown if the associated
-        getSVx value is non-zero; otherwise they follow the normal empty
-        value rules (hide when 0, "0", empty or None).
-    - getLOT (Maximum output conductivity): only shown when getCRT (cartridge
-        type) is "1" (HVE) or "2" (HVE+).
-    - getOHW (Soft water hardness): only shown when getCRT (cartridge type)
-        is "0" (HWE).
-    - Empty-string exclusions: keys listed in
-        _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_STRING are hidden when the
-        reported value is None or a whitespace-only string.
-    - Empty-value exclusions: keys listed in
-        _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_VALUE are hidden when the
-        reported value is numeric zero (0), the string "0", an empty string,
-        or None.
-    - Empty-IP exclusions: keys listed in
-        _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_IP are hidden when the
-        reported value is None, an empty/whitespace string, or the placeholder
-        IP "0.0.0.0".
-
-    Args:
-            status: The full flattened device status mapping (used for cross-key
-                    checks such as getPAx and getSVx).
-            key: The status key being considered (e.g. getWIP, getPV1).
-            value: The raw value reported by the device for this key.
+    HA always sets a language (default `en`), but the country is optional. A missing region
+    becomes `US`, matching the app, which always sends a full locale.
 
     Returns:
-            True when the key/value should result in a sensor entity; False when
-            the key should be suppressed according to the rules above.
-
-    Examples:
-            >>> is_sensor_visible(status, 'getWIP', '0.0.0.0')
-            False
-
-            >>> # If getSV1 == 5 then getCS1 is visible even if its own value is '0'
-            >>> is_sensor_visible({'getSV1': 5}, 'getCS1', '0')
-            True
+        A full locale like `de-DE`, `de-US` (no country) or `en-US` (no language).
     """
-    # Group keys controlled by getPAx should be hidden when getPAx is false
-    m = re.match(r"get(PV|PT|PF|PN|PM|PW|PB|PR)([1-8])$", key)
-    if m:
-        idx = m.group(2)
-        pa_key = f"getPA{idx}"
-        if not is_value_true(status.get(pa_key)):
-            return False
-
-    # Firmware-bug workaround: suppress getBAP only when it is exactly 0/empty
-    # AND getBAT reports a non-zero voltage. In that case the device exposes a
-    # spurious percentage field alongside the real voltage reading.
-    if key == "getBAP":
-        try:
-            bap_zero = float(value) == 0
-        except (ValueError, TypeError):
-            bap_zero = value is None or str(value).strip() == ""
-        if bap_zero:
-            bat_val = status.get("getBAT")
-            if bat_val is not None:
-                try:
-                    if float(bat_val) > 0:
-                        return False
-                except (ValueError, TypeError):
-                    pass
-
-    # Special logic for getCS1/2/3: show if corresponding getSVx is non-zero
-    if key in ("getCS1", "getCS2", "getCS3"):
-        sv_key = "getSV" + key[-1]
-        sv_val = status.get(sv_key)
-        if sv_val is not None:
-            try:
-                if float(sv_val) != 0:
-                    return True
-            except (ValueError, TypeError):
-                pass
-        if value is None:
-            return False
-        if isinstance(value, int | float) and float(value) == 0:
-            return False
-        if isinstance(value, str) and (value.strip() == "" or value == "0"):
-            return False
-
-    # getLOT (Maximum output conductivity) only applies to HVE / HVE+ cartridges (getCRT 1 or 2).
-    if key == "getLOT":
-        crt_val = status.get("getCRT")
-        if crt_val is None or str(crt_val).strip() not in ("1", "2"):
-            return False
-
-    # getOHW (Soft water hardness) only applies to HWE cartridges (getCRT 0).
-    if key == "getOHW":
-        crt_val = status.get("getCRT")
-        if crt_val is None or str(crt_val).strip() != "0":
-            return False
-
-    # Exclude when empty string
-    if key in _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_STRING:
-        if value is None:
-            return False
-        if isinstance(value, str) and value.strip() == "":
-            return False
-
-    # Exclude when empty value (0 or "")
-    if key in _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_VALUE:
-        if value is None:
-            return False
-        if isinstance(value, int | float) and float(value) == 0:
-            return False
-        if isinstance(value, str) and (value.strip() == "" or value == "0"):
-            return False
-
-    # Exclude empty IPs
-    if key in _SYR_CONNECT_SENSOR_EXCLUDED_WHEN_EMPTY_IPADDRESS:
-        if value is None:
-            return False
-        if isinstance(value, str) and (value.strip() == "" or value == "0.0.0.0"):
-            return False
-
-    return True
+    parts = (language or "en").replace("_", "-").split("-")
+    lang = parts[0].lower()
+    region = next((p.upper() for p in parts[1:] if len(p) == 2 and p.isalpha()), None)
+    if region is None:
+        region = country.upper() if country else "US"
+    return f"{lang}-{region}"
 
 
 def mask_ug_value(payload: str) -> str:
@@ -1251,11 +1539,16 @@ def mask_ug_value(payload: str) -> str:
 
     Replaces values like `ug="..."` with `ug="***"` (case-insensitive)
     so session tokens are not leaked in logs or diagnostics.
+
+    The payload is edited as text, not parsed, and `ug="..."` is masked anywhere in it: diagnostics
+    may pass truncated or malformed XML, server responses may contain a raw `>` inside attribute
+    values, and error messages may quote the token outside any tag. An unterminated value is masked
+    up to the end of the string. Non-string and empty payloads are returned unchanged.
     """
     if not isinstance(payload, str) or payload == "":
         return payload
     try:
-        # Use case-insensitive lookbehind to replace the attribute value only
-        return re.sub(r'(?i)(?<=ug=")[^"]*', "***", payload)
+        # The lookbehind keeps `ug` from matching inside longer names such as `xug` or `a:ug`.
+        return re.sub(r'(?i)(?<![\w:.-])(ug\s*=\s*")[^"]*', r"\1***", payload)
     except re.error:
         return payload

@@ -1,10 +1,11 @@
-"""Entity allowlist override for the muco_backwash model (SYR RSA Connect,
-dkv=506, getDFM=4, automatic-backwash "Rückspülautomatik" role).
+"""Entity allowlist override for the muco_backwash model.
+
+SYR RSA Connect (dkv=506, getDFM=4), automatic-backwash "Rückspülautomatik" role.
 
 Model type: Automatic Backwash System
 
 This is a POSITIVE list: only keys confirmed to be meaningful for this model
-are listed, unlike the shared global allowlists in const.py which have to
+are listed, unlike the shared global allowlists of the platforms which have to
 cover every supported model at once.
 
 No real-device or fixture capture exists for this variant yet - the keys
@@ -22,42 +23,83 @@ Deliberately NOT included, pending confirmation on a real device:
   set and belong to the other muco_leakprotect/muco_filling variants instead.
 
 If real-device testing shows any of the above (or other) keys are actually
-used, move them into SENSOR_KNOWN_KEYS below.
+used, move them into SENSOR_SUPPORTED_KEYS below.
 """
 
-SENSOR_KNOWN_KEYS = {
+from . import WHU_UNITS_MUCO, SyrConnectDeviceProfile
+
+SENSOR_SUPPORTED_KEYS = {
     # --- Connectivity ---
     "dst",
     # --- Alarm / Notification / Warning ---
-    "getALA", "getALM", "getALN", "getALW", "getNOT", "getWRN",
+    "getALA",
+    "getALM",
+    "getALN",
+    "getALW",
+    "getNOT",
+    "getWRN",
     # --- Device Status ---
     "getDFM",
     # --- Voltage / Battery ---
+    "getBAP",
     "getBAT",
     # --- Automatic Backwash (RSA) ---
-    "getCOA", "getCOM", "getRSA", "getRSD", "getRSE",
+    "getCOA",
+    "getCOM",
+    "getRSA",
+    "getRSD",
+    "getRSE",
     # --- Device Info & Diagnostics ---
-    "getEGW", "getEIP", "getLNG", "getMAC1", "getMAC2", "getSRN", "getVER",
+    "getEGW",
+    "getEIP",
+    "getLNG",
+    "getMAC1",
+    "getMAC2",
+    "getSRN",
+    "getTMZ",
+    "getVER",
     # --- Wi-Fi ---
-    "getAPT", "getWFC", "getWFR", "getWFS", "getWGW", "getWIP",
+    "getAPT",
+    "getWFC",
+    "getWFR",
+    "getWFS",
+    "getWGW",
+    "getWIP",
 }
 
-# getRSA/getRSD/getRSE deliberately excluded from SELECT_KNOWN_KEYS: their
+# getRSA/getRSD/getRSE deliberately excluded from SELECT_SUPPORTED_KEYS: their
 # value ranges (1-365 days, 1-100 s) are too large for a usable select
-# dropdown, same reasoning as getIWH/getMPR/getDWF in const.py.
-SELECT_KNOWN_KEYS: set[str] = set()
+# dropdown.
+SELECT_SUPPORTED_KEYS: set[str] = set()
 
-SWITCH_KNOWN_KEYS = {
-    "getBUZ", "getSSA", "getSSE",
-}
-
-BINARY_SENSOR_KNOWN_KEYS = {
+SWITCH_SUPPORTED_KEYS = {
     "getBUZ",
+    "getSSA",
+    "getSSE",
 }
 
-BUTTON_KNOWN_KEYS = {
-    "setALA", "setNOT", "setWRN",
+BINARY_SENSOR_SUPPORTED_KEYS = {
+    "getBUZ",
+    "getIDS",
+    "getSFV",
+}
+
+BUTTON_SUPPORTED_KEYS = {
+    "setALA",
+    "setNOT",
+    "setWRN",
 }
 
 # No shutoff valve on this model - it only automates backwash scheduling.
-VALVE_KNOWN_KEYS: set[str] = set()
+VALVE_SUPPORTED_KEYS: set[str] = set()
+
+
+PROFILE = SyrConnectDeviceProfile(
+    binary_sensor=BINARY_SENSOR_SUPPORTED_KEYS,
+    button=BUTTON_SUPPORTED_KEYS,
+    select=SELECT_SUPPORTED_KEYS,
+    sensor=SENSOR_SUPPORTED_KEYS,
+    switch=SWITCH_SUPPORTED_KEYS,
+    valve=VALVE_SUPPORTED_KEYS,
+    whu_units=WHU_UNITS_MUCO,
+)

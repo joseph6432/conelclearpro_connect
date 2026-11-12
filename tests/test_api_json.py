@@ -1,26 +1,35 @@
 """Tests for the local JSON API client using fixtures."""
-from __future__ import annotations
 
+# The unit tests in this module check private helpers and attributes directly.
+# ruff: noqa: SLF001
+
+from datetime import UTC, datetime, timedelta
 import json
 import logging
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 
-from custom_components.syr_connect.api_json import SyrConnectJsonAPI
-from custom_components.syr_connect.exceptions import SyrConnectInvalidResponseError
+from custom_components.conelclearpro_connect.api_json import SyrConnectJsonAPI
+from custom_components.conelclearpro_connect.exceptions import (
+    SyrConnectAuthError,
+    SyrConnectConnectionError,
+    SyrConnectHTTPError,
+    SyrConnectInvalidResponseError,
+)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "json"
 
 
 def load_fixture(name: str) -> dict:
+    """Load a JSON fixture by file name."""
     path = FIXTURES_DIR / name
     with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+        data: dict[str, Any] = json.load(fh)
+    return data
 
 
 @pytest.mark.parametrize(
@@ -30,6 +39,7 @@ def load_fixture(name: str) -> dict:
         "SyrSafeTechV4_old_get_all.json",
         "SyrSafeTechV4_get_all.json",
         "SyrNeoSoft2500_get_all.json",
+        "SyrNeoSoft5000_get_all.json",
     ],
 )
 async def test_json_client_parses_fixture(fixture: str) -> None:
@@ -45,7 +55,7 @@ async def test_json_client_parses_fixture(fixture: str) -> None:
 
     assert isinstance(status, dict)
     # Sanity check: fixture contains at least one getXYZ key
-    assert any(k.startswith("get") for k in status.keys())
+    assert any(k.startswith("get") for k in status)
 
 
 def test_init_with_base_url() -> None:
@@ -59,11 +69,7 @@ def test_init_with_base_url() -> None:
 def test_init_without_base_url() -> None:
     """Test initialization without base_url (requires host and base_path)."""
     sess = MagicMock()
-    client = SyrConnectJsonAPI(
-        sess,
-        host="192.168.1.100",
-        base_path="/api/v1/"
-    )
+    client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/api/v1/")
     assert client._base_url is None
     assert client._host == "192.168.1.100"
     assert client._base_path == "/api/v1/"
@@ -124,11 +130,7 @@ def test_build_base_url_without_ip_or_base_path() -> None:
 def test_build_base_url_constructs_url() -> None:
     """Test _build_base_url constructs URL from host and base_path."""
     sess = MagicMock()
-    client = SyrConnectJsonAPI(
-        sess,
-        host="192.168.1.50",
-        base_path="/api/v1/"
-    )
+    client = SyrConnectJsonAPI(sess, host="192.168.1.50", base_path="/api/v1/")
     result = client._build_base_url()
     assert result == "http://192.168.1.50:5333/api/v1/"
 
@@ -177,11 +179,7 @@ async def test_login_success() -> None:
     mock_response.__aexit__ = AsyncMock(return_value=None)
     sess.get = MagicMock(return_value=mock_response)
 
-    client = SyrConnectJsonAPI(
-        sess,
-        host="192.168.1.100",
-        base_path="/api/v1/"
-    )
+    client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/api/v1/")
 
     result = await client.login()
 
@@ -195,26 +193,23 @@ async def test_login_success() -> None:
 
 async def test_login_http_error() -> None:
     """Test login raises exception on HTTP error."""
-    from custom_components.syr_connect.exceptions import SyrConnectConnectionError
 
     sess = MagicMock()
     mock_response = MagicMock()
     mock_response.status = 500
-    mock_response.raise_for_status = MagicMock(side_effect=aiohttp.ClientResponseError(
-        request_info=MagicMock(),
-        history=(),
-        status=500,
-        message="Internal Server Error"
-    ))
+    mock_response.raise_for_status = MagicMock(
+        side_effect=aiohttp.ClientResponseError(
+            request_info=MagicMock(),
+            history=(),
+            status=500,
+            message="Internal Server Error",
+        )
+    )
     mock_response.__aenter__ = AsyncMock(return_value=mock_response)
     mock_response.__aexit__ = AsyncMock(return_value=None)
     sess.get = MagicMock(return_value=mock_response)
 
-    client = SyrConnectJsonAPI(
-        sess,
-        host="192.168.1.100",
-        base_path="/api/v1/"
-    )
+    client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/api/v1/")
 
     with pytest.raises(SyrConnectConnectionError):
         await client.login()
@@ -222,7 +217,6 @@ async def test_login_http_error() -> None:
 
 async def test_login_invalid_response_status() -> None:
     """Test login raises exception when response status is not 'OK'."""
-    from custom_components.syr_connect.exceptions import SyrConnectAuthError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -233,19 +227,16 @@ async def test_login_invalid_response_status() -> None:
     mock_response.__aexit__ = AsyncMock(return_value=None)
     sess.get = MagicMock(return_value=mock_response)
 
-    client = SyrConnectJsonAPI(
-        sess,
-        host="192.168.1.100",
-        base_path="/api/v1/"
-    )
+    client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/api/v1/")
 
-    with pytest.raises(SyrConnectAuthError, match="Login failed: Device returned status 'ERROR'"):
+    with pytest.raises(
+        SyrConnectAuthError, match="Login failed: Device returned status 'ERROR'"
+    ):
         await client.login()
 
 
 async def test_login_missing_status_key() -> None:
     """Test login raises exception when response is missing the status key."""
-    from custom_components.syr_connect.exceptions import SyrConnectAuthError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -256,19 +247,16 @@ async def test_login_missing_status_key() -> None:
     mock_response.__aexit__ = AsyncMock(return_value=None)
     sess.get = MagicMock(return_value=mock_response)
 
-    client = SyrConnectJsonAPI(
-        sess,
-        host="192.168.1.100",
-        base_path="/api/v1/"
-    )
+    client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/api/v1/")
 
-    with pytest.raises(SyrConnectAuthError, match="Login failed: Response missing expected key"):
+    with pytest.raises(
+        SyrConnectAuthError, match="Login failed: Response missing expected key"
+    ):
         await client.login()
 
 
 async def test_login_mima_status() -> None:
     """Test login raises exception when response status is MIMA."""
-    from custom_components.syr_connect.exceptions import SyrConnectAuthError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -279,19 +267,17 @@ async def test_login_mima_status() -> None:
     mock_response.__aexit__ = AsyncMock(return_value=None)
     sess.get = MagicMock(return_value=mock_response)
 
-    client = SyrConnectJsonAPI(
-        sess,
-        host="192.168.1.100",
-        base_path="/api/v1/"
-    )
+    client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/api/v1/")
 
-    with pytest.raises(SyrConnectAuthError, match="Login failed: Value .* is outside valid range for command ADM"):
+    with pytest.raises(
+        SyrConnectAuthError,
+        match="Login failed: Value .* is outside valid range for command ADM",
+    ):
         await client.login()
 
 
 async def test_login_nsc_status() -> None:
     """Test login raises exception when response status is NSC."""
-    from custom_components.syr_connect.exceptions import SyrConnectAuthError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -302,13 +288,11 @@ async def test_login_nsc_status() -> None:
     mock_response.__aexit__ = AsyncMock(return_value=None)
     sess.get = MagicMock(return_value=mock_response)
 
-    client = SyrConnectJsonAPI(
-        sess,
-        host="192.168.1.100",
-        base_path="/api/v1/"
-    )
+    client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/api/v1/")
 
-    with pytest.raises(SyrConnectAuthError, match="Login failed: Command .* does not exist"):
+    with pytest.raises(
+        SyrConnectAuthError, match="Login failed: Command .* does not exist"
+    ):
         await client.login()
 
 
@@ -316,14 +300,9 @@ async def test_login_404_treated_as_not_required() -> None:
     """Test login treats HTTP 404 as 'login not required' and sets flag."""
 
     sess = MagicMock()
-    client = SyrConnectJsonAPI(
-        sess,
-        host="192.168.1.100",
-        base_path="/api/v1/"
-    )
+    client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/api/v1/")
 
     # Simulate _execute_http_get raising a connection error for 404 endpoint
-    from custom_components.syr_connect.exceptions import SyrConnectHTTPError
 
     exc = SyrConnectHTTPError("Endpoint not found (HTTP 404)", status=404)
     with patch.object(client, "_execute_http_get", side_effect=exc):
@@ -345,11 +324,7 @@ async def test_login_factory_treated_as_required() -> None:
     mock_response.__aexit__ = AsyncMock(return_value=None)
     sess.get = MagicMock(return_value=mock_response)
 
-    client = SyrConnectJsonAPI(
-        sess,
-        host="192.168.1.100",
-        base_path="/safe-tec/"
-    )
+    client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/safe-tec/")
 
     result = await client.login()
 
@@ -394,7 +369,7 @@ async def test_get_device_status_does_not_call_login_if_not_required() -> None:
 
     # Mark that login is known not required
     client._login_required = False
-    client.login = AsyncMock()
+    client.login = AsyncMock()  # type: ignore[method-assign]
 
     data = {"getAB": "value"}
     with patch.object(client, "request_json_data", new=AsyncMock(return_value=data)):
@@ -415,7 +390,6 @@ async def test_request_json_data_no_base_url_raises() -> None:
 
 async def test_request_json_data_non_dict_raises() -> None:
     """Test request_json_data raises SyrConnectInvalidResponseError when response is not a dict."""
-    from custom_components.syr_connect.exceptions import SyrConnectInvalidResponseError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -428,23 +402,26 @@ async def test_request_json_data_non_dict_raises() -> None:
 
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
-    with pytest.raises(SyrConnectInvalidResponseError, match="API returned unexpected payload"):
+    with pytest.raises(
+        SyrConnectInvalidResponseError, match="API returned unexpected payload"
+    ):
         await client.request_json_data("/get/all")
 
 
 async def test_request_json_data_http_error() -> None:
     """Test request_json_data raises exception on HTTP error."""
-    from custom_components.syr_connect.exceptions import SyrConnectConnectionError
 
     sess = MagicMock()
     mock_response = MagicMock()
     mock_response.status = 500
-    mock_response.raise_for_status = MagicMock(side_effect=aiohttp.ClientResponseError(
-        request_info=MagicMock(),
-        history=(),
-        status=500,
-        message="Internal Server Error"
-    ))
+    mock_response.raise_for_status = MagicMock(
+        side_effect=aiohttp.ClientResponseError(
+            request_info=MagicMock(),
+            history=(),
+            status=500,
+            message="Internal Server Error",
+        )
+    )
     mock_response.__aenter__ = AsyncMock(return_value=mock_response)
     mock_response.__aexit__ = AsyncMock(return_value=None)
     sess.get = MagicMock(return_value=mock_response)
@@ -479,7 +456,7 @@ async def test_get_device_status_calls_login() -> None:
     client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/api/v1/")
 
     # Mock login
-    client.login = AsyncMock()
+    client.login = AsyncMock()  # type: ignore[method-assign]
 
     data = {"getAB": "value", "getCD": "123"}
     with patch.object(client, "request_json_data", new=AsyncMock(return_value=data)):
@@ -496,7 +473,11 @@ async def test_get_device_status_exception_returns_none() -> None:
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
     # Mock request_json_data to raise exception
-    with patch.object(client, "request_json_data", new=AsyncMock(side_effect=ValueError("Network error"))):
+    with patch.object(
+        client,
+        "request_json_data",
+        new=AsyncMock(side_effect=ValueError("Network error")),
+    ):
         status = await client.get_device_status("device1")
 
     assert status is None
@@ -553,17 +534,15 @@ async def test_set_device_status_success() -> None:
 
 async def test_set_device_status_http_error() -> None:
     """Test set_device_status raises exception on HTTP error."""
-    from custom_components.syr_connect.exceptions import SyrConnectAuthError
 
     sess = MagicMock()
     mock_response = MagicMock()
     mock_response.status = 403
-    mock_response.raise_for_status = MagicMock(side_effect=aiohttp.ClientResponseError(
-        request_info=MagicMock(),
-        history=(),
-        status=403,
-        message="Forbidden"
-    ))
+    mock_response.raise_for_status = MagicMock(
+        side_effect=aiohttp.ClientResponseError(
+            request_info=MagicMock(), history=(), status=403, message="Forbidden"
+        )
+    )
     mock_response.__aenter__ = AsyncMock(return_value=mock_response)
     mock_response.__aexit__ = AsyncMock(return_value=None)
     sess.get = MagicMock(return_value=mock_response)
@@ -581,7 +560,7 @@ async def test_get_device_status_skips_login_with_base_url() -> None:
 
     # Mark session as valid to verify login still not called
     client._last_login = datetime.now(UTC)
-    client.login = AsyncMock()
+    client.login = AsyncMock()  # type: ignore[method-assign]
 
     data = {"getAB": "value"}
     with patch.object(client, "request_json_data", new=AsyncMock(return_value=data)):
@@ -592,7 +571,9 @@ async def test_get_device_status_skips_login_with_base_url() -> None:
     assert status == {"getAB": "value"}
 
 
-async def test_request_json_data_logs_nsc_error(caplog: pytest.LogCaptureFixture) -> None:
+async def test_request_json_data_logs_nsc_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test request_json_data logs warning when response contains NSC error code."""
     sess = MagicMock()
     mock_response = MagicMock()
@@ -612,7 +593,9 @@ async def test_request_json_data_logs_nsc_error(caplog: pytest.LogCaptureFixture
     assert "JSON API: 'getXYZ' Command does not exist (NSC error)" in caplog.text
 
 
-async def test_request_json_data_logs_mima_error(caplog: pytest.LogCaptureFixture) -> None:
+async def test_request_json_data_logs_mima_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test request_json_data logs warning when response contains MIMA error code."""
     sess = MagicMock()
     mock_response = MagicMock()
@@ -635,7 +618,6 @@ async def test_request_json_data_logs_mima_error(caplog: pytest.LogCaptureFixtur
 
 async def test_set_device_status_raises_on_nsc_error() -> None:
     """Test set_device_status raises SyrConnectInvalidResponseError when response contains NSC error code."""
-    from custom_components.syr_connect.exceptions import SyrConnectInvalidResponseError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -648,13 +630,14 @@ async def test_set_device_status_raises_on_nsc_error() -> None:
 
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
-    with pytest.raises(SyrConnectInvalidResponseError, match="Command INVALID does not exist"):
+    with pytest.raises(
+        SyrConnectInvalidResponseError, match="Command INVALID does not exist"
+    ):
         await client.set_device_status("device1", [("INVALID", "value")])
 
 
 async def test_set_device_status_raises_on_mima_error() -> None:
     """Test set_device_status raises SyrConnectInvalidResponseError when response contains MIMA error code."""
-    from custom_components.syr_connect.exceptions import SyrConnectInvalidResponseError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -667,7 +650,10 @@ async def test_set_device_status_raises_on_mima_error() -> None:
 
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
-    with pytest.raises(SyrConnectInvalidResponseError, match="Value 999 is outside valid range for command PRF9"):
+    with pytest.raises(
+        SyrConnectInvalidResponseError,
+        match="Value 999 is outside valid range for command PRF9",
+    ):
         await client.set_device_status("device1", [("PRF9", "999")])
 
 
@@ -693,7 +679,7 @@ async def test_set_device_status_url_encodes_special_characters() -> None:
     assert "/set/rtm/02:15" in called_url
     assert result is True
 
-    # Test with value containing slash – also sent without encoding
+    # Test with value containing slash - also sent without encoding
     mock_response.json = AsyncMock(return_value={"setCMDvalue/with/slash": "OK"})
     result2 = await client.set_device_status("device1", [("CMD", "value/with/slash")])
     called_url2 = str(sess.get.call_args[0][0])
@@ -701,7 +687,9 @@ async def test_set_device_status_url_encodes_special_characters() -> None:
     assert result2 is True
 
 
-async def test_set_device_status_missing_response_key(caplog: pytest.LogCaptureFixture) -> None:
+async def test_set_device_status_missing_response_key(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test set_device_status handles missing response key gracefully."""
     sess = MagicMock()
     mock_response = MagicMock()
@@ -722,7 +710,9 @@ async def test_set_device_status_missing_response_key(caplog: pytest.LogCaptureF
     assert "Response missing expected key 'setTEST123'" in caplog.text
 
 
-async def test_set_device_status_unknown_status_code(caplog: pytest.LogCaptureFixture) -> None:
+async def test_set_device_status_unknown_status_code(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test set_device_status handles unknown status codes gracefully."""
     sess = MagicMock()
     mock_response = MagicMock()
@@ -743,7 +733,8 @@ async def test_set_device_status_unknown_status_code(caplog: pytest.LogCaptureFi
     assert "Unexpected status 'WEIRD'" in caplog.text
 
 
-def test_strip_set_prefix_and_cases():
+def test_strip_set_prefix_and_cases() -> None:
+    """Test strip set prefix and cases."""
     sess = MagicMock()
     api = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
@@ -753,7 +744,8 @@ def test_strip_set_prefix_and_cases():
     assert api._strip_set_prefix("setadm") == "adm"
 
 
-def test_normalize_cmd_for_url():
+def test_normalize_cmd_for_url() -> None:
+    """Test normalize cmd for url."""
     sess = MagicMock()
     api = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
@@ -766,7 +758,8 @@ def test_normalize_cmd_for_url():
     assert api._normalize_cmd_for_url("prf9") == "prf9"
 
 
-def test_response_key_for():
+def test_response_key_for() -> None:
+    """Test response key for."""
     sess = MagicMock()
     api = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
@@ -774,7 +767,8 @@ def test_response_key_for():
     assert api._response_key_for("PRF9", "999") == "setPRF9999"
 
 
-def test_build_set_url_encodes_and_cases():
+def test_build_set_url_encodes_and_cases() -> None:
+    """Test build set url encodes and cases."""
     sess = MagicMock()
     api = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
@@ -793,7 +787,6 @@ async def test_validate_response_errors_case_sensitive() -> None:
     Uppercase codes should log warnings; any non-uppercase variant
     should raise SyrConnectInvalidResponseError.
     """
-    from custom_components.syr_connect.exceptions import SyrConnectInvalidResponseError
 
     sess = MagicMock()
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
@@ -815,7 +808,10 @@ async def test_validate_response_errors_case_sensitive() -> None:
     with pytest.raises(SyrConnectInvalidResponseError):
         client._validate_response_errors({"key6": "MiMa"}, "http://test")
 
-async def test_validate_response_errors_accepts_error_colon_variant(caplog: pytest.LogCaptureFixture) -> None:
+
+async def test_validate_response_errors_accepts_error_colon_variant(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test _validate_response_errors accepts 'ERROR: CODE' variants and logs warnings."""
     sess = MagicMock()
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
@@ -825,20 +821,29 @@ async def test_validate_response_errors_accepts_error_colon_variant(caplog: pyte
 
     assert "JSON API: 'getXYZ' Command does not exist (NSC error)" in caplog.text
 
-async def test_validate_response_errors_handles_split_value_error(caplog: pytest.LogCaptureFixture) -> None:
+
+async def test_validate_response_errors_handles_split_value_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test _validate_response_errors handles ValueError from split() gracefully."""
     sess = MagicMock()
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
     class BadSplit(str):
-        def split(self, sep=None, maxsplit=-1):
+        __slots__ = ()
+
+        @override
+        def split(self, sep: Any = None, maxsplit: Any = -1) -> NoReturn:
             raise ValueError("split failed")
 
     with caplog.at_level(logging.WARNING):
-        client._validate_response_errors({"getXYZ": BadSplit("ERROR: NSC")}, "http://test")
+        client._validate_response_errors(
+            {"getXYZ": BadSplit("ERROR: NSC")}, "http://test"
+        )
 
     # Because split failed, code becomes '' and no NSC warning should be logged
     assert "Command does not exist (NSC error)" not in caplog.text
+
 
 async def test_validate_response_errors_ignores_non_string_values() -> None:
     """Test _validate_response_errors ignores non-string values."""
@@ -868,7 +873,9 @@ async def test_get_devices_fetches_and_caches() -> None:
         fetch_call_count += 1
         return original_data
 
-    with patch.object(client, "request_json_data", new=AsyncMock(side_effect=mock_fetch)):
+    with patch.object(
+        client, "request_json_data", new=AsyncMock(side_effect=mock_fetch)
+    ):
         # Call get_devices - should fetch /get/all
         devices = await client.get_devices("local")
         assert len(devices) == 1
@@ -936,7 +943,7 @@ async def test_get_devices_calls_login_when_session_invalid() -> None:
     client = SyrConnectJsonAPI(sess, host="192.168.1.1", base_path="/api/")
 
     # Mock login
-    client.login = AsyncMock()
+    client.login = AsyncMock()  # type: ignore[method-assign]
 
     data = {"getSRN": "12345", "getOther": "value"}
     with patch.object(client, "request_json_data", new=AsyncMock(return_value=data)):
@@ -951,7 +958,6 @@ async def test_get_devices_calls_login_when_session_invalid() -> None:
 
 async def test_execute_http_get_404_error() -> None:
     """Test _execute_http_get raises SyrConnectConnectionError on 404."""
-    from custom_components.syr_connect.exceptions import SyrConnectConnectionError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -975,22 +981,43 @@ async def test_execute_http_get_404_error() -> None:
         await client._execute_http_get("http://test:5333/api/missing")
 
 
-async def test_execute_http_get_timeout_error() -> None:
-    """Test _execute_http_get raises SyrConnectConnectionError on timeout."""
-    from custom_components.syr_connect.exceptions import SyrConnectConnectionError
-
+async def test_execute_http_get_does_not_follow_redirects() -> None:
+    """A redirect is not followed and fails the request."""
     sess = MagicMock()
-    sess.get = MagicMock(side_effect=TimeoutError("Request timed out"))
+    mock_response = MagicMock()
+    mock_response.status = 302
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = AsyncMock(return_value={"getSRN": "12345"})
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+    sess.get = MagicMock(return_value=mock_response)
 
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
-    with pytest.raises(SyrConnectConnectionError, match="Connection failed"):
+    with pytest.raises(SyrConnectHTTPError, match="Redirect not followed") as excinfo:
+        await client._execute_http_get("http://test:5333/api/get/all")
+
+    assert excinfo.value.status == 302
+    assert sess.get.call_args.kwargs["allow_redirects"] is False
+    mock_response.json.assert_not_called()
+
+
+async def test_execute_http_get_timeout_error() -> None:
+    """Test _execute_http_get raises SyrConnectConnectionError on timeout."""
+
+    sess = MagicMock()
+    sess.get = MagicMock(side_effect=TimeoutError())
+
+    client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
+
+    with pytest.raises(
+        SyrConnectConnectionError, match=r"Connection failed: TimeoutError\(\)"
+    ):
         await client._execute_http_get("http://test:5333/api/slow")
 
 
 async def test_execute_http_get_client_error() -> None:
     """Test _execute_http_get raises SyrConnectConnectionError on aiohttp.ClientError."""
-    from custom_components.syr_connect.exceptions import SyrConnectConnectionError
 
     sess = MagicMock()
     sess.get = MagicMock(side_effect=aiohttp.ClientError("Connection refused"))
@@ -1003,7 +1030,6 @@ async def test_execute_http_get_client_error() -> None:
 
 async def test_execute_http_get_unexpected_error() -> None:
     """Test _execute_http_get raises SyrConnectConnectionError on unexpected errors."""
-    from custom_components.syr_connect.exceptions import SyrConnectConnectionError
 
     sess = MagicMock()
     sess.get = MagicMock(side_effect=RuntimeError("Unexpected error"))
@@ -1016,7 +1042,6 @@ async def test_execute_http_get_unexpected_error() -> None:
 
 async def test_execute_http_get_logs_error_response_body() -> None:
     """Test _execute_http_get logs error response body for debugging."""
-    from custom_components.syr_connect.exceptions import SyrConnectConnectionError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -1040,9 +1065,10 @@ async def test_execute_http_get_logs_error_response_body() -> None:
         await client._execute_http_get("http://test:5333/api/error")
 
 
-async def test_execute_http_get_logs_error_response_read_failure(caplog: pytest.LogCaptureFixture) -> None:
+async def test_execute_http_get_logs_error_response_read_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test _execute_http_get handles error when reading error response body."""
-    from custom_components.syr_connect.exceptions import SyrConnectConnectionError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -1063,9 +1089,8 @@ async def test_execute_http_get_logs_error_response_read_failure(caplog: pytest.
 
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
-    with caplog.at_level(logging.DEBUG):
-        with pytest.raises(SyrConnectConnectionError):
-            await client._execute_http_get("http://test:5333/api/error")
+    with caplog.at_level(logging.DEBUG), pytest.raises(SyrConnectConnectionError):
+        await client._execute_http_get("http://test:5333/api/error")
 
     # Should log that it couldn't read the error response
     assert "Could not read error response" in caplog.text
@@ -1073,7 +1098,6 @@ async def test_execute_http_get_logs_error_response_read_failure(caplog: pytest.
 
 async def test_execute_http_get_reraises_invalid_response_error() -> None:
     """Test _execute_http_get re-raises SyrConnectInvalidResponseError without wrapping."""
-    from custom_components.syr_connect.exceptions import SyrConnectInvalidResponseError
 
     sess = MagicMock()
     mock_response = MagicMock()
@@ -1111,7 +1135,9 @@ async def test_get_device_status_with_cached_response() -> None:
     client._cached_get_all = cached_data
 
     # get_device_status should use the cached data without calling request_json_data
-    with patch.object(client, "request_json_data", new_callable=AsyncMock) as mock_request:
+    with patch.object(
+        client, "request_json_data", new_callable=AsyncMock
+    ) as mock_request:
         status = await client.get_device_status("12345")
 
     # Should NOT have called request_json_data
@@ -1123,15 +1149,16 @@ async def test_get_device_status_with_cached_response() -> None:
 
 async def test_request_json_data_returns_none_raises() -> None:
     """Test request_json_data raises error when _execute_http_get returns None unexpectedly."""
-    from custom_components.syr_connect.exceptions import SyrConnectInvalidResponseError
 
     sess = MagicMock()
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
     # Mock _execute_http_get to return None even though expect_json=True
-    with patch.object(client, "_execute_http_get", return_value=None):
-        with pytest.raises(SyrConnectInvalidResponseError, match="No data returned"):
-            await client.request_json_data("/get/all")
+    with (
+        patch.object(client, "_execute_http_get", return_value=None),
+        pytest.raises(SyrConnectInvalidResponseError, match="No data returned"),
+    ):
+        await client.request_json_data("/get/all")
 
 
 async def test_login_clears_cached_data() -> None:
@@ -1190,10 +1217,10 @@ async def test_get_device_status_without_cache_with_base_url() -> None:
 
     # Mock request_json_data
     data = {"getSRN": "12345", "getTemp": "25"}
-    client.request_json_data = AsyncMock(return_value=data)
+    client.request_json_data = AsyncMock(return_value=data)  # type: ignore[method-assign]
 
     # Should not call login because base_url is set
-    client.login = AsyncMock()
+    client.login = AsyncMock()  # type: ignore[method-assign]
 
     status = await client.get_device_status("12345")
 
@@ -1257,10 +1284,10 @@ async def test_get_devices_skips_login_when_session_valid() -> None:
 
     # Mock request_json_data
     data = {"getSRN": "12345"}
-    client.request_json_data = AsyncMock(return_value=data)
+    client.request_json_data = AsyncMock(return_value=data)  # type: ignore[method-assign]
 
     # Mock login
-    client.login = AsyncMock()
+    client.login = AsyncMock()  # type: ignore[method-assign]
 
     devices = await client.get_devices("local")
 
@@ -1269,126 +1296,14 @@ async def test_get_devices_skips_login_when_session_valid() -> None:
     assert devices[0]["project_id"] == "local"
 
 
-async def test_get_value_success() -> None:
-    """Test get_value fetches single value successfully."""
-    sess = MagicMock()
-    mock_response = MagicMock()
-    mock_response.status = 200
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = AsyncMock(return_value={"getFLO": 0})
-    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-    mock_response.__aexit__ = AsyncMock(return_value=None)
-    sess.get = MagicMock(return_value=mock_response)
-
-    client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
-    client._last_login = datetime.now(UTC)  # Valid session
-
-    result = await client.get_value("flo")
-
-    # Should return the single value dict
-    assert result == {"getFLO": 0}
-
-    # Verify correct URL was called
-    called_url = str(sess.get.call_args[0][0])
-    assert "api/get/flo" in called_url
-
-
-async def test_get_value_strips_get_prefix() -> None:
-    """Test get_value strips 'get' prefix from key."""
-    sess = MagicMock()
-    mock_response = MagicMock()
-    mock_response.status = 200
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = AsyncMock(return_value={"getTMP": 25})
-    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-    mock_response.__aexit__ = AsyncMock(return_value=None)
-    sess.get = MagicMock(return_value=mock_response)
-
-    client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
-    client._last_login = datetime.now(UTC)  # Valid session
-
-    # Pass key with 'get' prefix
-    result = await client.get_value("getTMP")
-
-    # Should return the value
-    assert result == {"getTMP": 25}
-
-    # Verify URL has normalized key without 'get' prefix
-    called_url = str(sess.get.call_args[0][0])
-    assert "api/get/tmp" in called_url
-
-
-async def test_get_value_calls_login_when_needed() -> None:
-    """Test get_value calls login when session is invalid."""
-    sess = MagicMock()
-    client = SyrConnectJsonAPI(sess, host="192.168.1.100", base_path="/api/")
-
-    # No valid session
-    client._last_login = None
-
-    # Mock login
-    client.login = AsyncMock()
-
-    # Mock request_json_data
-    client.request_json_data = AsyncMock(return_value={"getAB": 1})
-
-    await client.get_value("AB")
-
-    # Should have called login
-    client.login.assert_called_once()
-
-
-async def test_get_value_missing_key_raises() -> None:
-    """Test get_value raises exception when response missing expected key."""
-    sess = MagicMock()
-    mock_response = MagicMock()
-    mock_response.status = 200
-    mock_response.raise_for_status = MagicMock()
-    # Response has wrong key
-    mock_response.json = AsyncMock(return_value={"getSomeOtherKey": 123})
-    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-    mock_response.__aexit__ = AsyncMock(return_value=None)
-    sess.get = MagicMock(return_value=mock_response)
-
-    client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
-    client._last_login = datetime.now(UTC)  # Valid session
-
-    # Should raise SyrConnectInvalidResponseError
-    with pytest.raises(SyrConnectInvalidResponseError) as exc_info:
-        await client.get_value("FLO")
-
-    assert "Response missing expected key 'getFLO'" in str(exc_info.value)
-
-
-async def test_get_value_skips_login_with_base_url() -> None:
-    """Test get_value skips login when base_url is set (test mode)."""
-    sess = MagicMock()
-    mock_response = MagicMock()
-    mock_response.status = 200
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = AsyncMock(return_value={"getSRN": "12345"})
-    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-    mock_response.__aexit__ = AsyncMock(return_value=None)
-    sess.get = MagicMock(return_value=mock_response)
-
-    # Use base_url (test mode)
-    client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
-
-    # Mock login to verify it's not called
-    client.login = AsyncMock()
-
-    await client.get_value("SRN")
-
-    # Should NOT have called login in test mode
-    client.login.assert_not_called()
-
-
 async def test_validate_set_response_missing_key_on_login_raises() -> None:
     """When a login set-response is missing the expected key, raise SyrConnectInvalidResponseError."""
     client = SyrConnectJsonAPI(MagicMock(), base_url="http://test:5333/api/")
 
     with pytest.raises(SyrConnectInvalidResponseError):
-        client._validate_set_response({}, cmd="ADM", value="(2)f", device_id="login", is_login=True)
+        client._validate_set_response(
+            {}, cmd="ADM", value="(2)f", device_id="login", is_login=True
+        )
 
 
 async def test_get_device_status_returns_none_on_invalid_payload() -> None:
@@ -1407,17 +1322,18 @@ async def test_get_device_status_returns_none_on_invalid_payload() -> None:
 
 async def test_execute_http_get_401_auth_error() -> None:
     """Test _execute_http_get raises SyrConnectAuthError on 401/403."""
-    from custom_components.syr_connect.exceptions import SyrConnectAuthError
 
     sess = MagicMock()
     mock_response = MagicMock()
     mock_response.status = 401
-    mock_response.raise_for_status = MagicMock(side_effect=aiohttp.ClientResponseError(
-        request_info=MagicMock(),
-        history=(),
-        status=401,
-        message="Unauthorized",
-    ))
+    mock_response.raise_for_status = MagicMock(
+        side_effect=aiohttp.ClientResponseError(
+            request_info=MagicMock(),
+            history=(),
+            status=401,
+            message="Unauthorized",
+        )
+    )
     mock_response.text = AsyncMock(return_value="Unauthorized")
     mock_response.__aenter__ = AsyncMock(return_value=mock_response)
     mock_response.__aexit__ = AsyncMock(return_value=None)
@@ -1434,7 +1350,9 @@ def test_validate_set_response_missing_key_nonlogin_returns() -> None:
     client = SyrConnectJsonAPI(MagicMock(), base_url="http://test:5333/api/")
 
     # Should not raise for non-login missing key
-    client._validate_set_response({}, cmd="TEST", value="123", device_id="dev1", is_login=False)
+    client._validate_set_response(
+        {}, cmd="TEST", value="123", device_id="dev1", is_login=False
+    )
 
 
 async def test_login_skips_when_flag_false() -> None:
@@ -1456,31 +1374,37 @@ async def test_login_skips_when_flag_false() -> None:
 
 def test_validate_set_response_unknown_status_on_login_raises() -> None:
     """When a login set-response returns an unexpected status, raise SyrConnectInvalidResponseError."""
-    from custom_components.syr_connect.exceptions import SyrConnectInvalidResponseError
 
     client = SyrConnectJsonAPI(MagicMock(), base_url="http://test:5333/api/")
 
     # Provide response with expected key but unknown status and is_login=True
     resp_key = client._response_key_for("ADM", "(2)f")
     with pytest.raises(SyrConnectInvalidResponseError):
-        client._validate_set_response({resp_key: "WEIRD"}, cmd="ADM", value="(2)f", device_id="login", is_login=True)
+        client._validate_set_response(
+            {resp_key: "WEIRD"},
+            cmd="ADM",
+            value="(2)f",
+            device_id="login",
+            is_login=True,
+        )
 
 
 async def test_login_reraises_connection_error() -> None:
     """login() must re-raise SyrConnectConnectionError (line 367-369 coverage)."""
-    from custom_components.syr_connect.exceptions import SyrConnectConnectionError
 
     sess = MagicMock()
     client = SyrConnectJsonAPI(sess, base_url="http://test:5333/api/")
 
     # Patch _execute_http_get to raise SyrConnectConnectionError directly
-    with patch.object(
-        client,
-        "_execute_http_get",
-        side_effect=SyrConnectConnectionError("network down"),
+    with (
+        patch.object(
+            client,
+            "_execute_http_get",
+            side_effect=SyrConnectConnectionError("network down"),
+        ),
+        pytest.raises(SyrConnectConnectionError, match="network down"),
     ):
-        with pytest.raises(SyrConnectConnectionError, match="network down"):
-            await client.login()
+        await client.login()
 
 
 async def test_get_device_status_skips_login_when_login_not_required() -> None:
@@ -1492,7 +1416,7 @@ async def test_get_device_status_skips_login_when_login_not_required() -> None:
     client._login_required = False
     client._last_login = None
 
-    client.login = AsyncMock()
+    client.login = AsyncMock()  # type: ignore[method-assign]
 
     data = {"getSRN": "99999", "getFLO": "0"}
     with patch.object(client, "request_json_data", new=AsyncMock(return_value=data)):
@@ -1501,25 +1425,6 @@ async def test_get_device_status_skips_login_when_login_not_required() -> None:
     # login must NOT have been called
     client.login.assert_not_called()
     assert status == data
-
-
-async def test_get_value_skips_login_when_login_not_required() -> None:
-    """get_value skips login when _login_required is False (line 593 coverage)."""
-    sess = MagicMock()
-    client = SyrConnectJsonAPI(sess, host="192.168.1.1", base_path="/api/")
-
-    # Explicitly mark login as not required and session as expired
-    client._login_required = False
-    client._last_login = None
-
-    client.login = AsyncMock()
-
-    with patch.object(client, "request_json_data", new=AsyncMock(return_value={"getFLO": 42})):
-        result = await client.get_value("getFLO")
-
-    # login must NOT have been called
-    client.login.assert_not_called()
-    assert result == {"getFLO": 42}
 
 
 async def test_get_devices_skips_login_when_login_not_required() -> None:
@@ -1531,7 +1436,7 @@ async def test_get_devices_skips_login_when_login_not_required() -> None:
     client._login_required = False
     client._last_login = None
 
-    client.login = AsyncMock()
+    client.login = AsyncMock()  # type: ignore[method-assign]
 
     data = {"getSRN": "ABC123", "getFLO": "0"}
     with patch.object(client, "request_json_data", new=AsyncMock(return_value=data)):

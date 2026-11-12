@@ -1,26 +1,47 @@
 """Encryption and decryption utilities for SYR Connect API."""
-from __future__ import annotations
 
 import base64
 import logging
 
 from Cryptodome.Cipher import AES
+from Cryptodome.Util.Padding import unpad
+
+from .const import _conelclearpro_connect_CLIENT_SECURE_KEY, _conelclearpro_connect_CLIENT_SECURE_VECTOR
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _decrypt_crypt_value(value: str) -> bytes:
+    """Return the raw bytes of an encrypted crypt_key or crypt_vector.
+
+    Args:
+        value: Base64 text of the AES-CBC encrypted base64 text of the raw bytes
+
+    Returns:
+        Raw key or IV bytes
+    """
+    cipher = AES.new(
+        base64.b64decode(_conelclearpro_connect_CLIENT_SECURE_KEY),
+        AES.MODE_CBC,
+        base64.b64decode(_conelclearpro_connect_CLIENT_SECURE_VECTOR),
+    )
+    return base64.b64decode(
+        unpad(cipher.decrypt(base64.b64decode(value)), AES.block_size)
+    )
 
 
 class SyrEncryption:
     """Handle encryption and decryption for SYR Connect API."""
 
-    def __init__(self, key: str, iv: str) -> None:
+    def __init__(self, crypt_key: str, crypt_vector: str) -> None:
         """Initialize encryption handler.
 
         Args:
-            key: Hexadecimal encryption key
-            iv: Hexadecimal initialization vector
+            crypt_key: Encrypted key of the service (SyrConnectService.crypt_key)
+            crypt_vector: Encrypted IV of the service (SyrConnectService.crypt_vector)
 
         Note:
-            Both ``key`` and ``iv`` are fixed constants defined by the SYR Connect
+            Both values are fixed constants of the service in the SYR Connect
             cloud API protocol. Using a static IV with AES-CBC is a known weakness:
             identical plaintext blocks produce identical ciphertext, which can leak
             patterns to an observer. This is an API constraint that cannot be
@@ -29,8 +50,8 @@ class SyrEncryption:
             encrypt user-controlled data, and each response carries a unique
             session token that varies per login.
         """
-        self.key = bytes.fromhex(key)
-        self.iv = bytes.fromhex(iv)
+        self.key = _decrypt_crypt_value(crypt_key)
+        self.iv = _decrypt_crypt_value(crypt_vector)
 
     def decrypt(self, encrypted_payload: str) -> str:
         """Decrypt an encrypted payload.
@@ -55,15 +76,17 @@ class SyrEncryption:
             cipher = AES.new(self.key, AES.MODE_CBC, self.iv)
             decrypted = cipher.decrypt(encrypted_data)
 
-            # Remove padding manually due to non-standard padding scheme
-            # SYR devices use a custom padding approach where the plaintext
-            # may be padded with null bytes (\x00) followed by spaces.
-            # Standard PKCS7 unpadding would fail, so we manually strip:
-            # 1. Null bytes (\x00) - may be present at the end
-            # 2. Whitespace - may be used as additional padding
-            result = decrypted.decode('utf-8').rstrip('\x00').rstrip()
-            _LOGGER.debug("Decryption successful (result length: %d chars)", len(result))
-            return result
+            # The cloud pads the plaintext with null bytes (\x00) to the AES
+            # block size (zero padding), not with PKCS7, so standard unpadding
+            # would fail. The null bytes must be removed because XML does not
+            # allow them; any trailing whitespace before them is stripped as
+            # well, it is not part of the XML content.
+            result = decrypted.decode("utf-8").rstrip("\x00").rstrip()
+            _LOGGER.debug(
+                "Decryption successful (result length: %d chars)", len(result)
+            )
         except Exception as err:
             _LOGGER.error("Decryption failed: %s", err)
             raise ValueError(f"Failed to decrypt payload: {err}") from err
+        else:
+            return result

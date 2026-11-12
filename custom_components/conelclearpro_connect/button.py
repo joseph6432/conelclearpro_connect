@@ -6,7 +6,7 @@ Reset buttons (setALA, setNOT, setWRN) only trigger when the device
 reports an active code. The following values are treated as "no alarm"
 and will suppress the reset command (case-insensitive):
 
-    "", "0", "00", "0000", "ff", "a0x0000", "255"
+    "", "0", "00", "ff", "a0x0000", "255"
 
 For setALA, both the alarm field and the reset method depend on the
 model signature:
@@ -17,31 +17,32 @@ model signature:
     alarm_clear_via_set: True  → send setALA/setALM with value "FF"
     alarm_clear_via_set: False → call dedicated clrALA/clrALM endpoint
 
-setNOT and setWRN always send "FF" via the standard set command.
+setNOT and setWRN send "FF" (XML API) or 255 (JSON API) via the standard set
+command.
 """
-from __future__ import annotations
 
 import logging
-from typing import cast
+from typing import override
 
-from homeassistant.components.button import ButtonEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api_json import SyrConnectJsonAPI
-from .const import (
-    _SYR_CONNECT_BUTTON_KNOWN_KEYS,
-    _SYR_CONNECT_SENSOR_ALA_CODES_NO_ALARM,
-    _SYR_CONNECT_SENSOR_EXCLUDED,
-)
-from .coordinator import SyrConnectDataUpdateCoordinator
+from .const import _conelclearpro_connect_SENSOR_ALA_CODES_NO_ALARM, DOMAIN
+from .coordinator import SyrConnectConfigEntry, SyrConnectDataUpdateCoordinator
+from .data import SyrConnectDevice
+from .entity import SyrConnectEntity, async_add_device_entities
 from .exceptions import SyrConnectError
-from .helpers import build_device_info, build_entity_id, build_unique_id, get_model_known_keys, registry_cleanup
-from .models import detect_model
+from .helpers import (
+    find_entity_id,
+    get_device_model,
+    get_model_supported_keys,
+    registry_cleanup,
+)
+from .models import SyrConnectModel
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,9 +50,65 @@ _LOGGER = logging.getLogger(__name__)
 PARALLEL_UPDATES = 1
 
 
+# Descriptions of all buttons, in the order they are created
+_conelclearpro_connect_BUTTON_TYPES: tuple[ButtonEntityDescription, ...] = (
+    ButtonEntityDescription(
+        key="setSIR",  # Trigger manual regeneration
+    ),
+    ButtonEntityDescription(
+        key="setALA",  # Reset alarm
+    ),
+    ButtonEntityDescription(
+        key="setNOT",  # Reset notification
+    ),
+    ButtonEntityDescription(
+        key="setWRN",  # Reset warning
+    ),
+    ButtonEntityDescription(
+        key="setDEX",  # Start microleakage test
+    ),
+)
+
+_conelclearpro_connect_BUTTON_DESCRIPTIONS: dict[str, ButtonEntityDescription] = {
+    description.key: description for description in _conelclearpro_connect_BUTTON_TYPES
+}
+
+# Supported keys for the button platform — used by registry_cleanup to remove stale entries.
+_conelclearpro_connect_BUTTON_SUPPORTED_KEYS = set(_conelclearpro_connect_BUTTON_DESCRIPTIONS)
+
+# Icons of the reset buttons while there is something to reset; otherwise the
+# icons.json default is shown
+_conelclearpro_connect_BUTTON_ACTIVE_ICONS = {
+    "setALA": "mdi:alarm-light",
+    "setNOT": "mdi:bell-ring",
+    "setWRN": "mdi:alert",
+}
+
+
+def _is_active_code(raw: object) -> bool:
+    """Return True if an alarm, notification or warning code is active.
+
+    See the module docstring for the values that mean "nothing active".
+    """
+    return (
+        raw is not None
+        and str(raw).strip().upper() not in _conelclearpro_connect_SENSOR_ALA_CODES_NO_ALARM
+    )
+
+
+def _reset_get_key(command: str, model: SyrConnectModel) -> str:
+    """Return the status key read by a reset button (setALA, setNOT, setWRN).
+
+    For setALA the key depends on the model: getALM with alarm_style_alm, otherwise getALA.
+    """
+    if command == "setALA":
+        return "getALM" if model.alarm_style_alm else "getALA"
+    return "get" + command[3:]
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: SyrConnectConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up SYR Connect buttons.
@@ -62,122 +119,122 @@ async def async_setup_entry(
         async_add_entities: Callback to add entities
     """
     _LOGGER.debug("Setting up SYR Connect buttons")
-    coordinator = cast(SyrConnectDataUpdateCoordinator, entry.runtime_data)
-
-    entities = []
+    coordinator = entry.runtime_data
 
     if not coordinator.data:
         _LOGGER.warning("No coordinator data available for buttons")
         return
 
     registry_cleanup(
-        hass, coordinator.data, "button",
-        allowed_keys=_SYR_CONNECT_BUTTON_KNOWN_KEYS - _SYR_CONNECT_SENSOR_EXCLUDED,
+        hass,
+        coordinator.data,
+        "button",
+        allowed_keys=_conelclearpro_connect_BUTTON_SUPPORTED_KEYS,
         entry_id=coordinator.entry_id,
     )
 
-    for device in coordinator.data.get('devices', []):
-        device_id = device['id']
-        device_name = device['name']
-        project_id = device['project_id']
-        status = device.get('status', {})
+    async_add_device_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        lambda device: _build_device_buttons(hass, coordinator, device),
+    )
 
-        # Add action buttons
-        action_buttons = [
-            ("setSIR", "Regenerate Now"),
-            ("setALA", "Reset alarm"),
-            ("setNOT", "Reset notification"),
-            ("setWRN", "Reset warning"),
-            ("setDEX", "Start microleakage test"),
-        ]
 
-        created_commands: set[str] = set()
+def _build_device_buttons(
+    hass: HomeAssistant,
+    coordinator: SyrConnectDataUpdateCoordinator,
+    device: SyrConnectDevice,
+) -> list[SyrConnectButton]:
+    """Return the buttons of one device and remove the ones it no longer has."""
+    entities: list[SyrConnectButton] = []
+    device_id = device["id"]
+    device_name = device["name"]
+    status = device.get("status", {})
 
-        model_info = detect_model(status)
+    created_commands: set[str] = set()
 
-        # Scope to the detected model (falls back to the global allowlist for
-        # models that haven't opted into per-model key lists).
-        known_button_keys = get_model_known_keys(model_info, "button", _SYR_CONNECT_BUTTON_KNOWN_KEYS)
+    model_info = get_device_model(device)
 
-        for command, _name in action_buttons:
-            if command not in known_button_keys:
+    # Scope to the detected model (falls back to the global allowlist for
+    # models that haven't opted into per-model key lists).
+    supported_button_keys = get_model_supported_keys(
+        model_info, "button", _conelclearpro_connect_BUTTON_SUPPORTED_KEYS
+    )
+
+    for description in _conelclearpro_connect_BUTTON_TYPES:
+        command = description.key
+        if command not in supported_button_keys:
+            continue
+
+        # Derive the corresponding "getXYZ" key from the command name
+        # (e.g. 'setNOT' -> 'getNOT') and skip if it's not present
+        # in the device status.
+        # For setALA, the actual get-key depends on the model: devices with
+        # alarm_style_alm use getALM; all others use getALA.
+        if command == "setALA":
+            alarm_field = "alm" if model_info.alarm_style_alm else "ala"
+            get_key = f"get{alarm_field.upper()}"
+        elif command == "setDEX":
+            # No getDEX read key exists; presence is indicated by getDSV
+            # (microleakage test status), which exists on devices that support
+            # microleakage tests (Trio DFR/LS, SafeTech+).
+            # setDEX is JSON-only: skip on XML API.
+            if not isinstance(coordinator.api, SyrConnectJsonAPI):
                 continue
+            get_key = "getDSV"
+        else:
+            get_key = "get" + command[3:]
+        if get_key not in status:
+            continue
 
-            # Derive the corresponding "getXYZ" key from the command name
-            # (e.g. 'setNOT' -> 'getNOT') and skip if it's not present
-            # in the device status.
-            # For setALA, the actual get-key depends on the model: devices with
-            # alarm_style_alm use getALM; all others use getALA.
-            if command == "setALA":
-                alarm_field = "alm" if model_info.get("alarm_style_alm") else "ala"
-                get_key = f"get{alarm_field.upper()}"
-            elif command == "setDEX":
-                # No getDEX read key exists; presence is indicated by getDSV
-                # (microleakage test status), which exists on devices that support
-                # microleakage tests (Trio DFR/LS, SafeTech+).
-                # setDEX is JSON-only: skip on XML API.
-                if not isinstance(coordinator.api, SyrConnectJsonAPI):
-                    continue
-                get_key = "getDSV"
-            else:
-                get_key = "get" + command[3:]
-            if get_key not in status:
+        # setSIR (manual regeneration trigger) is only meaningful for
+        # softener models that actually support scheduled regeneration.
+        # Workaround for https://github.com/alexhass/conelclearpro_connect/issues/24
+        if command == "setSIR" and model_info.maximum_regeneration_interval is None:
+            continue
+
+        entities.append(
+            SyrConnectButton(
+                coordinator,
+                device_id,
+                device_name,
+                command,
+            )
+        )
+        created_commands.add(command)
+        _LOGGER.debug("Adding button: %s (%s)", device_name, command)
+
+    # Remove any previously-registered button that is no longer being created
+    # for this device (e.g. a command whose get-key disappeared from the status).
+    # These buttons are in _conelclearpro_connect_BUTTON_SUPPORTED_KEYS and therefore survive
+    # the global registry_cleanup; they must be removed individually here. A device
+    # without a status (not fetched yet) is not passed here (async_add_device_entities).
+    try:
+        registry = er.async_get(hass)
+        for description in _conelclearpro_connect_BUTTON_TYPES:
+            command = description.key
+            if command in created_commands:
                 continue
-
-            # setSIR (manual regeneration trigger) is only meaningful for
-            # softener models that actually support scheduled regeneration.
-            # Workaround for https://github.com/alexhass/syr_connect/issues/24
-            if command == "setSIR" and model_info.get("maximum_regeneration_interval") is None:
-                continue
-
-            entities.append(
-                SyrConnectButton(
-                    coordinator,
-                    device_id,
-                    device_name,
-                    project_id,
-                    command,
+            # Found by unique_id, so a renamed or "_2"-suffixed button is removed as well
+            stale_entity_id = find_entity_id(
+                registry, "button", coordinator.entry_id, device_id, command
+            )
+            if stale_entity_id is not None:
+                _LOGGER.debug(
+                    "Removing conditionally-skipped button from registry: %s",
+                    stale_entity_id,
                 )
-            )
-            created_commands.add(command)
-            _LOGGER.debug("Adding button: %s (%s)", device_name, command)
-
-        # Remove any previously-registered button that is no longer being created
-        # for this device (e.g. a command whose get-key disappeared from the status).
-        # These buttons are in _SYR_CONNECT_BUTTON_KNOWN_KEYS and therefore survive
-        # the global registry_cleanup above; they must be removed individually here.
-        try:
-            registry = er.async_get(hass)
-            prefix = f"button.syr_connect_{device_id.lower()}_"
-            for reg_entry in list(registry.entities.values()):
-                if coordinator.entry_id is not None and reg_entry.config_entry_id != coordinator.entry_id:
-                    continue
-                if not reg_entry.entity_id.startswith(prefix):
-                    continue
-                key = reg_entry.entity_id[len(prefix):]
-                # Reconstruct the original command (e.g. "setsir" -> "setSIR")
-                # by checking against all known commands case-insensitively.
-                for known_cmd in action_buttons:
-                    if known_cmd[0].lower() == key and known_cmd[0] not in created_commands:
-                        _LOGGER.debug(
-                            "Removing conditionally-skipped button from registry: %s",
-                            reg_entry.entity_id,
-                        )
-                        registry.async_remove(reg_entry.entity_id)
-                        break
-        except Exception:
-            _LOGGER.exception(
-                "Failed to remove conditionally-skipped buttons for device %s", device_id
-            )
-
-    if entities:
-        _LOGGER.debug("Adding %d button(s) total", len(entities))
-        async_add_entities(entities)
-    else:
-        _LOGGER.debug("No button entities to add")
+                registry.async_remove(stale_entity_id)
+    except Exception:
+        _LOGGER.exception(
+            "Failed to remove conditionally-skipped buttons for device %s",
+            device_id,
+        )
+    return entities
 
 
-class SyrConnectButton(CoordinatorEntity, ButtonEntity):
+class SyrConnectButton(SyrConnectEntity, ButtonEntity):
     """Representation of a SYR Connect button."""
 
     def __init__(
@@ -185,7 +242,6 @@ class SyrConnectButton(CoordinatorEntity, ButtonEntity):
         coordinator: SyrConnectDataUpdateCoordinator,
         device_id: str,
         device_name: str,
-        project_id: str,
         command: str,
     ) -> None:
         """Initialize the button.
@@ -194,28 +250,31 @@ class SyrConnectButton(CoordinatorEntity, ButtonEntity):
             coordinator: Data update coordinator
             device_id: Device ID (serial number)
             device_name: Device display name
-            project_id: Project ID
             command: Command to execute (e.g., 'setSIR')
         """
-        super().__init__(coordinator)
+        super().__init__(coordinator, device_id, device_name, "button", command)
 
-        self._device_id = device_id
-        self._device_name = device_name
-        self._project_id = project_id
         self._command = command
+        self.entity_description = _conelclearpro_connect_BUTTON_DESCRIPTIONS[command]
 
-        self._attr_unique_id = build_unique_id(coordinator.entry_id, device_id, command)
-        # Use translation key for localized button names; let HA build the name
-        self._attr_has_entity_name = True
-        self._attr_translation_key = command.lower()
+    @property
+    @override
+    def icon(self) -> str | None:
+        """Return the icon of a reset button while there is something to reset.
 
-        # Override the entity_id to use technical name (serial number) with domain prefix
-        # This matches the sensor entity ID structure
-        self.entity_id = build_entity_id("button", device_id, command)
+        Otherwise the icon comes from icons.json.
+        """
+        active_icon = _conelclearpro_connect_BUTTON_ACTIVE_ICONS.get(self._command)
+        if active_icon is None or self._device is None:
+            return None
+        status = self._status
+        if _is_active_code(
+            status.get(_reset_get_key(self._command, self.device_model))
+        ):
+            return active_icon
+        return None
 
-        # Build device info from coordinator data
-        self._attr_device_info = build_device_info(device_id, device_name, coordinator.data)
-
+    @override
     async def async_press(self) -> None:
         """Press the button.
 
@@ -231,46 +290,45 @@ class SyrConnectButton(CoordinatorEntity, ButtonEntity):
         model signature flags alarm_style_alm and alarm_clear_via_set.
 
         Raises:
+            ServiceValidationError: If a microleakage test is already running
             HomeAssistantError: If the button press fails or no reset is required
         """
         # Avoid accessing possibly unset internal name attribute; use translation key or unique id
-        button_id = getattr(self, "_attr_translation_key", None) or getattr(self, "_attr_unique_id", None)
+        button_id = getattr(self, "_attr_translation_key", None) or getattr(
+            self, "_attr_unique_id", None
+        )
         _LOGGER.debug("Button pressed: %s (device: %s)", button_id, self._device_id)
 
-        coordinator = cast(SyrConnectDataUpdateCoordinator, self.coordinator)
+        coordinator = self.coordinator
+        status = self._status
         try:
             # Handle setDEX: start the microleakage test by sending True.
             # Reject the request if getDSV=1, which means a test is already running.
             # Value encoding: getTYP < 100 → integer 1, otherwise → boolean "true".
             if self._command == "setDEX":
-                status = None
-                for device in coordinator.data.get("devices", []):
-                    if device["id"] == self._device_id:
-                        status = device.get("status", {})
-                        break
-                raw_dsv = None if status is None else status.get("getDSV")
+                raw_dsv = status.get("getDSV")
                 if str(raw_dsv).strip() == "1":
-                    _LOGGER.warning("Microleakage test already running on %s, skipping setDEX", self._device_id)
-                    return
+                    raise ServiceValidationError(
+                        translation_domain=DOMAIN,
+                        translation_key="microleakage_test_running",
+                        translation_placeholders={"device": self._device_name},
+                    )
                 # Determine value encoding from getTYP (JSON devices only).
-                typ = None if status is None else status.get("getTYP")
+                typ = status.get("getTYP")
                 try:
                     dex_value: int | str = 1 if int(typ) < 100 else "true"  # type: ignore[arg-type]
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     dex_value = "true"  # getTYP absent or non-numeric → boolean
-                await coordinator.async_set_device_value(self._device_id, self._command, dex_value)
+                await coordinator.async_set_device_value(
+                    self._device_id, self._command, dex_value
+                )
                 return
 
             # Handle setSIR: initiate regeneration with the appropriate value.
             # getSIR = 1 (integer/string) → send setSIR = 0 (integer).
             # getSIR = False / "false" → send setSIR = "true" (string, lowercase).
             if self._command == "setSIR":
-                status = None
-                for device in coordinator.data.get("devices", []):
-                    if device["id"] == self._device_id:
-                        status = device.get("status", {})
-                        break
-                raw_sir = None if status is None else status.get("getSIR")
+                raw_sir = status.get("getSIR")
                 # Map the reported getSIR value to the correct setSIR payload.
                 # - Boolean False (or the string "false") → send "true" (lowercase string).
                 # - Anything else (e.g. "1", 1) → send 0.
@@ -279,21 +337,15 @@ class SyrConnectButton(CoordinatorEntity, ButtonEntity):
                     value_sir = "true"
                 else:
                     value_sir = 0
-                await coordinator.async_set_device_value(self._device_id, self._command, value_sir)
+                await coordinator.async_set_device_value(
+                    self._device_id, self._command, value_sir
+                )
                 return
 
             # Reset buttons (setALA, setNOT, setWRN): read the current alarm/notification/
             # warning value from the device status and only send a reset if an active code
             # is present. This avoids unnecessary API calls when nothing needs clearing.
             if self._command in ("setALA", "setNOT", "setWRN"):
-                # Locate the device's status dictionary in the coordinator payload.
-                # coordinator.data['devices'] is a list; find the entry by device id.
-                status = None
-                for device in coordinator.data.get("devices", []):
-                    if device["id"] == self._device_id:
-                        status = device.get("status", {})
-                        break
-
                 if self._command == "setALA":
                     # Resolve alarm field (ALA vs ALM) and clear method (set vs clr)
                     # from model signature flags:
@@ -301,34 +353,35 @@ class SyrConnectButton(CoordinatorEntity, ButtonEntity):
                     #   alarm_style_alm: False → field = ALA (uses getALA / setALA / clrALA)
                     #   alarm_clear_via_set: True  → reset via setALA/setALM "FF"
                     #   alarm_clear_via_set: False → reset via dedicated clrALA/clrALM endpoint
-                    try:
-                        model_info = detect_model(status or {})
-                    except (ValueError, KeyError, AttributeError, TypeError) as err:
-                        _LOGGER.debug("Failed to detect model for alarm reset: %s", err)
-                        model_info = {}
-
-                    alarm_style_alm: bool = bool(model_info.get("alarm_style_alm"))
-                    alarm_clear_via_set: bool = bool(model_info.get("alarm_clear_via_set"))
+                    model_info = self.device_model
+                    alarm_style_alm = model_info.alarm_style_alm
+                    alarm_clear_via_set = model_info.alarm_clear_via_set
                     field = "alm" if alarm_style_alm else "ala"
                     get_key = f"get{field.upper()}"
 
                     # Read the current alarm value. raw may be None, a string, or a number
                     # depending on the device firmware.
-                    raw = status.get(get_key) if status is not None else None
+                    raw = status.get(get_key)
                     # Sentinel values that indicate no active alarm (see module docstring).
-                    if raw is None or str(raw).strip().upper() in _SYR_CONNECT_SENSOR_ALA_CODES_NO_ALARM:
-                        raise HomeAssistantError(
-                            f"No reset required for {get_key} on {self._device_id}"
+                    if not _is_active_code(raw):
+                        raise ServiceValidationError(
+                            translation_domain=DOMAIN,
+                            translation_key="no_alarm_to_reset",
+                            translation_placeholders={"device": self._device_name},
                         )
 
                     if alarm_clear_via_set:
                         # Device resets the alarm via a standard set command with value "FF".
                         set_cmd = f"set{field.upper()}"
-                        await coordinator.async_set_device_value(self._device_id, set_cmd, "FF")
+                        await coordinator.async_set_device_value(
+                            self._device_id, set_cmd, "FF"
+                        )
                     else:
                         # Active alarm confirmed above via getALA / getALM;
                         # send dedicated clear command (clrALA / clrALM).
-                        await coordinator.async_clear_device_alarm(self._device_id, field)
+                        await coordinator.async_clear_device_alarm(
+                            self._device_id, field
+                        )
                     return
 
                 # setNOT / setWRN: determine the corresponding get key, check for an
@@ -342,38 +395,36 @@ class SyrConnectButton(CoordinatorEntity, ButtonEntity):
                     get_key = "getWRN"
 
                 # raw may be None, a string, or a number depending on the device firmware.
-                raw = None
-                if status is not None:
-                    raw = status.get(get_key)
+                raw = status.get(get_key)
 
                 # Sentinel values that indicate no active notification / warning.
-                if raw is None or str(raw).strip().upper() in _SYR_CONNECT_SENSOR_ALA_CODES_NO_ALARM:
-                    raise HomeAssistantError(
-                        f"No reset required for {get_key} on {self._device_id}"
+                if not _is_active_code(raw):
+                    raise ServiceValidationError(
+                        translation_domain=DOMAIN,
+                        translation_key=(
+                            "no_notification_to_reset"
+                            if get_key == "getNOT"
+                            else "no_warning_to_reset"
+                        ),
+                        translation_placeholders={"device": self._device_name},
                     )
 
-                reset_value: int | str = 255 if isinstance(coordinator.api, SyrConnectJsonAPI) else "FF"
-                await coordinator.async_set_device_value(self._device_id, self._command, reset_value)
+                reset_value: int | str = (
+                    255 if isinstance(coordinator.api, SyrConnectJsonAPI) else "FF"
+                )
+                await coordinator.async_set_device_value(
+                    self._device_id, self._command, reset_value
+                )
                 return
-
-            # Default: no action for commands not explicitly handled above.
-            return
         except (SyrConnectError, ValueError, TypeError, KeyError) as err:
-            raise HomeAssistantError(f"Failed to press button: {err}") from err
-
-    @property
-    def available(self) -> bool:
-        """Return if entity is available.
-
-        Returns:
-            True if last coordinator update was successful and device is available
-        """
-        if not self.coordinator.last_update_success:
-            return False
-
-        # Check if the specific device is available
-        for device in self.coordinator.data.get('devices', []):
-            if device['id'] == self._device_id:
-                return device.get('available', True)
-
-        return True
+            _LOGGER.error(
+                "Failed to press %s on %s: %s", self._command, self._device_id, err
+            )
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="button_press_failed",
+                translation_placeholders={
+                    "device": self._device_name,
+                    "entity": self._entity_name,
+                },
+            ) from err

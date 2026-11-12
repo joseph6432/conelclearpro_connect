@@ -1,13 +1,47 @@
 """Response parser and validator for SYR Connect API."""
-from __future__ import annotations
 
+from datetime import UTC, datetime
 import logging
-from typing import Any
+import math
+import re
+from typing import Any, NoReturn
 from urllib.parse import unquote_plus
 
-import defusedxml.ElementTree as etree  # noqa: N813
+import defusedxml.ElementTree as etree
+
+from .data import SyrConnectDevice
+from .exceptions import (
+    SyrConnectAuthError,
+    SyrConnectLoginFailedError,
+    SyrConnectSessionExpiredError,
+)
+from .helpers import is_device_offline
 
 _LOGGER = logging.getLogger(__name__)
+
+# Text of a rejected login for a wrong password; always German
+# (docs/known_issues_xml_api.md, issue 3)
+_conelclearpro_connect_RESPONSE_PARSER_WRONG_PASSWORD_TEXT = (
+    "Benutzername und das Passwort stimmen nicht überein"
+)
+
+
+def _parse_utc_offset(value: Any) -> int | None:
+    """Return a UTC offset (tzo) in seconds, or None if it is missing or invalid.
+
+    Formats:
+    - Summer time in Germany: "02:00:00" -> 7200
+    - Negative offset: "-05:30:00" -> -19800
+    """
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"(-)?(\d{1,2}):(\d{2})(?::(\d{2}))?", value.strip())
+    if match is None:
+        return None
+    seconds = (
+        int(match.group(2)) * 3600 + int(match.group(3)) * 60 + int(match.group(4) or 0)
+    )
+    return -seconds if match.group(1) else seconds
 
 
 class ResponseParser:
@@ -95,9 +129,37 @@ class ResponseParser:
             if not children and not element.attrib:
                 return text
             # Otherwise add it as #text key
-            result['#text'] = text
+            result["#text"] = text
 
-        return result if result else {}
+        return result or {}
+
+    @staticmethod
+    def _raise_if_session_expired(parsed: dict[str, Any]) -> None:
+        """Raise SyrConnectSessionExpiredError if the webservice rejected the session token.
+
+        An invalid or expired token is not answered with an HTTP error but with HTTP 200 and
+        `<sc><msg v="Der Access-Token ist ungültig oder abgelaufen. ..." hl="Ungültiger Token !"
+        mtid="1" /></sc>` instead of any data (see docs/known_issues_xml_api.md, issue 4).
+        `mtid="1"` is used for detection because the texts are localized.
+        """
+        sc = parsed.get("sc")
+        msg = sc.get("msg") if isinstance(sc, dict) else None
+        if isinstance(msg, dict) and str(msg.get("@mtid", "")).strip() == "1":
+            raise SyrConnectSessionExpiredError(
+                f"Session token rejected: {msg.get('@v', '')}"
+            )
+
+    def raise_if_session_expired(self, xml_response: str) -> None:
+        """Raise SyrConnectSessionExpiredError if a response rejects the session token.
+
+        For responses that are otherwise not parsed (e.g. SetDeviceCollectionStatus).
+        A response that is no XML at all is left to the caller.
+        """
+        try:
+            parsed = self.parse_xml(xml_response)
+        except ValueError:
+            return
+        self._raise_if_session_expired(parsed)
 
     def parse_login_response(self, xml_response: str) -> tuple[str, dict[str, Any]]:
         """Parse login response and extract session ID and projects.
@@ -114,21 +176,66 @@ class ResponseParser:
         parsed = self.parse_xml(xml_response)
 
         # Validate response structure
-        if not self.validate_structure(parsed, ['sc', 'api']):
+        if not self.validate_structure(parsed, ["sc", "api"]):
             raise ValueError("Authentication failed: Invalid login response structure")
 
         # The api element contains the encrypted session data as a string
-        api_data = parsed['sc']['api']
+        api_data = parsed["sc"]["api"]
         if isinstance(api_data, dict):
             # If it has attributes, the text is in #text
-            encrypted_text = api_data.get('#text', '')
+            encrypted_text = api_data.get("#text", "")
         else:
             # Otherwise it's a direct string
             encrypted_text = api_data
 
         return encrypted_text, parsed
 
-    def parse_decrypted_login(self, decrypted_xml: str) -> tuple[str, list[dict[str, Any]]]:
+    @staticmethod
+    def is_login_successful(parsed: dict[str, Any]) -> bool:
+        """Return True if a parsed login response reports success (<suc v="true"/>).
+
+        The flag stands unencrypted next to <api> and is "false" for every rejected
+        login, whatever the cause (see docs/known_issues_xml_api.md, issue 3).
+        """
+        sc = parsed.get("sc")
+        suc = sc.get("suc") if isinstance(sc, dict) else None
+        return isinstance(suc, dict) and str(suc.get("@v", "")).lower() == "true"
+
+    def raise_login_rejected(self, decrypted_xml: str) -> NoReturn:
+        """Raise the error for a rejected login (<suc v="false"/>).
+
+        A wrong password is the only cause the server names, by the text of
+        <msg v="...">. An unknown username and cloud outages get the same generic text,
+        so they must not request a re-authentication (docs/known_issues_xml_api.md,
+        issue 3).
+
+        Args:
+            decrypted_xml: Decrypted content of the login response
+
+        Raises:
+            SyrConnectAuthError: If the server rejected the password
+            SyrConnectLoginFailedError: For every other cause
+        """
+        # Safe to log: a rejected login has no session token to leak
+        _LOGGER.debug("Decrypted rejected login response: %s", decrypted_xml)
+        try:
+            parsed = self.parse_xml(f"<xml>{decrypted_xml}</xml>")
+        except ValueError:
+            parsed = {}
+        root = parsed.get("xml")
+        msg = root.get("msg") if isinstance(root, dict) else None
+        server_message = msg.get("@v") if isinstance(msg, dict) else None
+        detail = f" Message: {server_message}" if server_message else ""
+        if (
+            isinstance(server_message, str)
+            and _conelclearpro_connect_RESPONSE_PARSER_WRONG_PASSWORD_TEXT in server_message
+        ):
+            raise SyrConnectAuthError(f"Invalid credentials.{detail}")
+        raise SyrConnectLoginFailedError(f"Login rejected.{detail}")
+
+    def parse_decrypted_login(
+        self, decrypted_xml: str
+    ) -> tuple[str, list[dict[str, Any]]]:
         """Parse decrypted login data.
 
         Args:
@@ -140,71 +247,99 @@ class ResponseParser:
         Raises:
             ValueError: If structure is invalid
         """
-        wrapped_xml = f'<xml>{decrypted_xml}</xml>'
+        wrapped_xml = f"<xml>{decrypted_xml}</xml>"
         parsed = self.parse_xml(wrapped_xml)
 
-        # Validate session structure
-        if not self.validate_structure(parsed, ['xml', 'usr', '@id']):
-            raise ValueError("Authentication failed: Invalid credentials or session data")
+        # Only called for a successful login (<suc v="true"/>), so a missing session is a
+        # malformed answer, not rejected credentials
+        if not self.validate_structure(parsed, ["xml", "usr", "@id"]):
+            raise ValueError("Login succeeded but the response has no session")
 
-        session_id = parsed['xml']['usr']['@id']
+        session_id = parsed["xml"]["usr"]["@id"]
 
         # Validate projects structure
-        if not self.validate_structure(parsed, ['xml', 'prs', 'pre']):
-            raise ValueError("Authentication succeeded but no projects found in account")
+        if not self.validate_structure(parsed, ["xml", "prs", "pre"]):
+            raise ValueError(
+                "Authentication succeeded but no projects found in account"
+            )
 
-        projects_data = parsed['xml']['prs']['pre']
+        projects_data = parsed["xml"]["prs"]["pre"]
 
         # Ensure projects is a list
         if not isinstance(projects_data, list):
             projects_data = [projects_data]
 
         # Parse projects
-        projects = []
-        for project in projects_data:
-            projects.append({
-                'id': project['@id'],
-                'name': project['@n'],
-            })
+        projects = [
+            {
+                "id": project["@id"],
+                "name": project["@n"],
+            }
+            for project in projects_data
+        ]
 
         return session_id, projects
 
-    def parse_device_list_response(self, xml_response: str) -> list[dict[str, Any]]:
+    def parse_device_list_response(self, xml_response: str) -> list[SyrConnectDevice]:
         """Parse device list response.
 
         Args:
             xml_response: XML response string
 
         Returns:
-            List of devices with their information
+            List of devices with their information; empty if the project has no devices
+
+        Raises:
+            ValueError: If the response contains no project (``sc>prs>pr``)
         """
         parsed = self.parse_xml(xml_response)
-        devices: list[dict[str, Any]] = []
-        device_aliases: dict[str, str] = {}
+        self._raise_if_session_expired(parsed)
 
-        # Extract device aliases
-        if self.validate_structure(parsed, ['sc', 'col']):
-            col = parsed['sc']['col']
-            if 'dcl' in col:
-                dcl_list = col['dcl'] if isinstance(col['dcl'], list) else [col['dcl']]
+        # A valid answer always contains the project, even if it has no devices left
+        # (see SyrTestDevice_GetProjectDeviceCollections_NoDevices.xml). Anything else
+        # (error answer, maintenance page) must not be mistaken for an empty project,
+        # because devices missing from the list are removed from Home Assistant.
+        if not self.validate_structure(parsed, ["sc", "prs", "pr"]):
+            raise ValueError("Device list response contains no project.")
+
+        # Device time values are local time (docs/known_issues_xml_api.md, issue 5). The
+        # project reports the current UTC offset of its time zone, which the cloud
+        # switches with daylight saving time.
+        project = parsed["sc"]["prs"]["pr"]
+        if isinstance(project, list):
+            project = project[0]
+        utc_offset = _parse_utc_offset(project.get("@tzo"))
+
+        devices: list[SyrConnectDevice] = []
+        device_aliases: dict[str, str] = {}
+        device_kind_versions: dict[str, int] = {}
+
+        # Extract device aliases and device kind versions. The cloud reports dkv on the
+        # device collection (dcl), not on the device (d) itself.
+        if self.validate_structure(parsed, ["sc", "col"]):
+            col = parsed["sc"]["col"]
+            if "dcl" in col:
+                dcl_list = col["dcl"] if isinstance(col["dcl"], list) else [col["dcl"]]
                 for dcl in dcl_list:
-                    if '@dclg' in dcl and '@ali' in dcl:
+                    if "@dclg" in dcl and "@ali" in dcl:
                         # URL-decode the alias (replace + with space and decode %XX sequences)
-                        device_aliases[dcl['@dclg']] = unquote_plus(dcl['@ali'])
+                        device_aliases[dcl["@dclg"]] = unquote_plus(dcl["@ali"])
+                    if "@dclg" in dcl:
+                        device_kind_versions[dcl["@dclg"]] = int(dcl.get("@dkv") or 0)
 
         # Extract devices
-        if not self.validate_structure(parsed, ['sc', 'dvs']):
+        if not self.validate_structure(parsed, ["sc", "dvs"]):
             _LOGGER.debug("No 'dvs' element found in device list response")
             return devices
 
-        dvs = parsed['sc']['dvs']
+        dvs = parsed["sc"]["dvs"]
 
         # Check if dvs contains 'd' element(s)
-        if 'd' in dvs:
-            device_list = dvs['d']
+        if "d" in dvs:
+            device_list = dvs["d"]
             if not isinstance(device_list, list):
                 device_list = [device_list]
-        elif isinstance(dvs, dict) and '@dclg' in dvs:
+        elif isinstance(dvs, dict) and "@dclg" in dvs:
             # dvs itself is a device
             device_list = [dvs]
         else:
@@ -214,25 +349,36 @@ class ResponseParser:
         _LOGGER.debug("Found %d device(s) in response", len(device_list))
 
         for device in device_list:
-            if '@dclg' in device:
-                dclg_id = device['@dclg']
-                serial_number = device.get('@sn', 'Unknown')
+            if "@dclg" in device:
+                dclg_id = device["@dclg"]
+                serial_number = device.get("@sn", "Unknown")
                 device_name = device_aliases.get(dclg_id, serial_number)
-                dk = int(device.get('@dk') or 0)
-                dkv = int(device.get('@dkv') or 0)
-                sbt = int(device.get('@sbt') or 0)
+                dk = int(device.get("@dk") or 0)
+                dkv = device_kind_versions.get(dclg_id, 0)
+                sbt = int(device.get("@sbt") or 0)
 
-                _LOGGER.debug("Adding device: %s (DCLG: %s, SN: %s, DK=%s, DKV=%s, SBT=%s)", device_name, dclg_id, serial_number, dk, dkv, sbt)
+                _LOGGER.debug(
+                    "Adding device: %s (DCLG: %s, SN: %s, DK=%s, DKV=%s, SBT=%s)",
+                    device_name,
+                    dclg_id,
+                    serial_number,
+                    dk,
+                    dkv,
+                    sbt,
+                )
 
-                devices.append({
-                    'id': serial_number,  # Use serial number as device ID
-                    'dclg': dclg_id,
-                    'serial_number': serial_number,
-                    'name': device_name,
-                    'dk': dk,
-                    'dkv': dkv,
-                    'sbt': sbt,
-                })
+                entry: SyrConnectDevice = {
+                    "id": serial_number,  # Use serial number as device ID
+                    "dclg": dclg_id,
+                    "serial_number": serial_number,
+                    "name": device_name,
+                    "dk": dk,
+                    "dkv": dkv,
+                    "sbt": sbt,
+                }
+                if utc_offset is not None:
+                    entry["utc_offset"] = utc_offset
+                devices.append(entry)
             else:
                 _LOGGER.debug("Skipping device without @dclg: %s", device)
 
@@ -248,8 +394,9 @@ class ResponseParser:
             Dictionary of status attributes or None if response is incomplete
         """
         parsed = self.parse_xml(xml_response)
+        self._raise_if_session_expired(parsed)
 
-        if 'sc' not in parsed:
+        if "sc" not in parsed:
             _LOGGER.warning("No 'sc' element in status response")
             return None
 
@@ -257,110 +404,204 @@ class ResponseParser:
         # <dvs><d>...<c n="..." v="..."/>...</d></dvs>. If that detailed
         # structure is missing (e.g. response only contains <col><dcl .../>),
         # treat the response as incomplete and skip updating sensors.
-        sc = parsed['sc']
-        if 'dvs' not in sc:
-            _LOGGER.debug("Status response missing 'dvs' element; treating as incomplete: %s", sc.get('col'))
+        sc = parsed["sc"]
+        if "dvs" not in sc:
+            _LOGGER.debug(
+                "Status response missing 'dvs' element; treating as incomplete: %s",
+                sc.get("col"),
+            )
             return None
 
-        dvs = sc['dvs']
+        dvs = sc["dvs"]
         # Normalize device list
         device_list = None
-        if isinstance(dvs, dict) and 'd' in dvs:
-            device_list = dvs['d']
+        if isinstance(dvs, dict) and "d" in dvs:
+            device_list = dvs["d"]
         elif isinstance(dvs, list):
             device_list = dvs
-        elif isinstance(dvs, dict) and '@dclg' in dvs:
+        elif isinstance(dvs, dict) and "@dclg" in dvs:
             device_list = [dvs]
 
         if not device_list:
-            _LOGGER.warning("Status response 'dvs' element contains no device entries; skipping update: %s", dvs)
+            _LOGGER.warning(
+                "Status response 'dvs' element contains no device entries; skipping update: %s",
+                dvs,
+            )
             return None
+        # A single <d> element is parsed as a dict, several as a list
+        if not isinstance(device_list, list):
+            device_list = [device_list]
 
         # If the response is broken (broken fragments), skip it.
         if self._ignore_broken_response(device_list):
             return None
 
         # Ensure at least one device entry contains detailed <c> children
-        has_c = False
-        if isinstance(device_list, list):
-            for d in device_list:
-                if isinstance(d, dict) and 'c' in d:
-                    has_c = True
-                    break
-        elif isinstance(device_list, dict) and 'c' in device_list:
-            has_c = True
-
-        if not has_c:
-            _LOGGER.warning("Device entries in 'dvs' lack <c> children; skipping update")
+        if not any(isinstance(d, dict) and "c" in d for d in device_list):
+            _LOGGER.warning(
+                "Device entries in 'dvs' lack <c> children; skipping update"
+            )
             return None
 
-        return self._flatten_attributes(parsed['sc'])
+        return self._flatten_attributes(parsed["sc"])
 
     def _ignore_broken_response(self, device_list: Any) -> bool:
-        """Ignore broken responses
+        """Ignore broken responses.
+
+        Whenever the cloud returns nonsense, the response is ignored and the previous
+        values are kept. This is a heuristic: there is no list of keys that makes a
+        response complete, and it is not known which other broken answers the cloud
+        sends. It is extended whenever a new broken answer is found.
 
         Dirty workaround:
-        1. Syr Trio DFR/LS: For unknown reaons the device very often returns an XML
+        1. Syr Trio DFR/LS: For unknown reasons the device very often returns an XML
            response with getSRN, getALA, getNOT, getWRN only. This causes unwanted
            sensor status flapping. This need to be ignored.
+
+        Exception: devices the cloud reports offline (dst="0" never online, dst="1"
+        offline) also answer with getSRN etc. only. That answer is passed on, so the
+        coordinator marks the device unavailable. These devices are skipped by the
+        check; an online device in the same response is still checked.
+
+        Resulting device states:
+        - Offline (dst 0/1): passed on, the device becomes unavailable.
+        - Back online (dst="2") with a full answer: passed on, the values are updated
+          and the device is available again.
+        - Back online (dst="2") with broken names only: ignored, the device keeps its
+          previous state (stays unavailable) until a full answer arrives.
+
+        Args:
+            device_list: The <d> entries of the response (a list, or a single dict)
+
+        Returns:
+            True if the response is broken and must be ignored, otherwise False
         """
-        # New detection: if every device only contains minimal 'c' entries
-        # with names in the broken set, treat as broken response.
+        # Detection: if every device that is not offline only contains minimal 'c'
+        # entries with names in the broken set, treat as broken response.
         broken_names = {"getSRN", "getALA", "getNOT", "getWRN"}
 
         def get_c_names(d: Any) -> set:
             names: set = set()
             if not isinstance(d, dict):
                 return names
-            c = d.get('c')
+            c = d.get("c")
             if not c:
                 return names
             if isinstance(c, list):
                 for item in c:
-                    if isinstance(item, dict) and '@n' in item:
-                        names.add(item['@n'])
-            elif isinstance(c, dict) and '@n' in c:
-                names.add(c['@n'])
+                    if isinstance(item, dict) and "@n" in item:
+                        names.add(item["@n"])
+            elif isinstance(c, dict) and "@n" in c:
+                names.add(c["@n"])
             return names
 
-        c_names_list: list[set] = []
-        if isinstance(device_list, list):
-            for d in device_list:
-                c_names_list.append(get_c_names(d))
-        else:
-            c_names_list.append(get_c_names(device_list))
+        devices = device_list if isinstance(device_list, list) else [device_list]
+
+        # A device the cloud reports offline (dst="0" never online, dst="1" offline) has
+        # no more data than this; its minimal answer is genuine, not the Trio glitch
+        # (which comes from online devices, dst="2"). Parsing it lets the coordinator
+        # mark the device unavailable instead of keeping it "available" with no status.
+        # Exempt only the offline devices, so an online one in the same response is still checked.
+        online_devices = [
+            d
+            for d in devices
+            if not (isinstance(d, dict) and is_device_offline(d.get("@dst")))
+        ]
+        if not online_devices:
+            return False
+
+        # Collect the <c n="..."> names reported by each online device
+        c_names_list: list[set] = [get_c_names(d) for d in online_devices]
 
         # If every device has at least one c-name and all names are a subset
         # of the minimal broken set, ignore the response.
-        if c_names_list and all(names and names.issubset(broken_names) for names in c_names_list):
-            _LOGGER.debug("Ignoring status response: minimal c-names present %s", c_names_list)
+        if c_names_list and all(
+            names and names.issubset(broken_names) for names in c_names_list
+        ):
+            _LOGGER.debug(
+                "Ignoring status response: incomplete c-names present %s", c_names_list
+            )
             return True
 
         # Only treat as broken when minimal c-names are present.
         return False
 
-    def parse_statistics_response(self, xml_response: str) -> dict[str, Any]:
-        """Parse statistics response.
+    def parse_statistics_response(
+        self, xml_response: str
+    ) -> list[tuple[datetime, float]]:
+        """Parse the measurements (<sth dt v>) of a statistics response.
+
+        See "SafeFloor measurement history" in docs/syrconnect-protocol.md for the
+        format. The timestamps are UTC. Measurements without a valid timestamp or value
+        are skipped.
 
         Args:
             xml_response: XML response string
 
         Returns:
-            Dictionary of statistics data
+            (timestamp, value) of every measurement, sorted by timestamp; empty if the
+            response has no measurements or is an error message
         """
         parsed = self.parse_xml(xml_response)
+        self._raise_if_session_expired(parsed)
 
         # Guard: require top-level 'sc' element before any further access
-        if 'sc' not in parsed:
+        if "sc" not in parsed:
             _LOGGER.warning("No 'sc' element in statistics response")
-            return {}
+            return []
 
-        # Check for API-level error message returned inside <sc>
-        if self.validate_structure(parsed, ['sc', 'msg']):
-            _LOGGER.warning("Statistics API returned message: %s", parsed['sc']['msg'])
-            return {}
+        # Check for API-level error message returned inside <sc>, e.g. for an unknown dclg
+        if self.validate_structure(parsed, ["sc", "msg"]):
+            _LOGGER.warning("Statistics API returned message: %s", parsed["sc"]["msg"])
+            return []
 
-        return self._flatten_attributes(parsed['sc'])
+        measurements: list[tuple[datetime, float]] = []
+        for sth in self._find_elements(parsed["sc"], "sth"):
+            raw_dt = sth.get("@dt")
+            raw_value = sth.get("@v")
+            try:
+                timestamp = datetime.strptime(str(raw_dt), "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=UTC
+                )
+                value = float(str(raw_value).replace(",", "."))
+            except ValueError:
+                value = math.nan
+            if not math.isfinite(value):
+                _LOGGER.debug(
+                    "Skipping measurement with invalid data: dt=%r v=%r",
+                    raw_dt,
+                    raw_value,
+                )
+                continue
+            measurements.append((timestamp, value))
+        return sorted(measurements)
+
+    @staticmethod
+    def _find_elements(data: Any, tag: str) -> list[dict[str, Any]]:
+        """Return every element with this tag below a parsed XML structure.
+
+        Args:
+            data: Parsed XML structure (see parse_xml)
+            tag: Tag of the elements to return
+
+        Returns:
+            The elements in document order
+        """
+        found: list[dict[str, Any]] = []
+        if isinstance(data, list):
+            for item in data:
+                found.extend(ResponseParser._find_elements(item, tag))
+        elif isinstance(data, dict):
+            for key, value in data.items():
+                if key == tag:
+                    found.extend(
+                        item
+                        for item in (value if isinstance(value, list) else [value])
+                        if isinstance(item, dict)
+                    )
+                else:
+                    found.extend(ResponseParser._find_elements(value, tag))
+        return found
 
     @staticmethod
     def _flatten_attributes(data: dict | list, prefix: str = "") -> dict[str, Any]:
@@ -378,39 +619,41 @@ class ResponseParser:
         if isinstance(data, dict):
             for key, value in data.items():
                 # Skip checksum
-                if key == 'cs':
+                if key == "cs":
                     continue
 
                 # Handle attributes (starting with @)
-                if key.startswith('@'):
+                if key.startswith("@"):
                     result[key[1:]] = value
 
                 # Handle text content
-                elif key == '#text':
-                    result['_text'] = value
+                elif key == "#text":
+                    result["_text"] = value
 
                 # Handle 'c' tags which contain actual data
-                elif key == 'c':
+                elif key == "c":
                     if isinstance(value, list):
                         for item in value:
                             # By design: '@v' is required by the API spec on every <c>
                             # element. Elements that lack '@v' are malformed fragments
                             # and are silently skipped. When '@s' (shadow/pending value)
                             # is also present, it takes priority over '@v' in the result.
-                            if isinstance(item, dict) and '@n' in item and '@v' in item:
-                                name = item['@n']
+                            if isinstance(item, dict) and "@n" in item and "@v" in item:
+                                name = item["@n"]
                                 # If a shadow/pending value 's' is present, the device has
                                 # received a new setting but not yet applied it. Display 's'
                                 # until it disappears (at which point 'v' holds the new value).
-                                result[name] = item['@s'] if '@s' in item else item['@v']
+                                result[name] = (
+                                    item["@s"] if "@s" in item else item["@v"]
+                                )
                                 for extra in ("dt", "m", "acd", "ih"):
                                     if f"@{extra}" in item:
                                         result[f"{name}_{extra}"] = item[f"@{extra}"]
                     # Single (non-list) <c> element: same design contract — '@v' required,
                     # malformed elements silently skipped, '@s' takes priority when present.
-                    elif isinstance(value, dict) and '@n' in value and '@v' in value:
-                        name = value['@n']
-                        result[name] = value['@s'] if '@s' in value else value['@v']
+                    elif isinstance(value, dict) and "@n" in value and "@v" in value:
+                        name = value["@n"]
+                        result[name] = value["@s"] if "@s" in value else value["@v"]
                         for extra in ("dt", "m", "acd", "ih"):
                             if f"@{extra}" in value:
                                 result[f"{name}_{extra}"] = value[f"@{extra}"]

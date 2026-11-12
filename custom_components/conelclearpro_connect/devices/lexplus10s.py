@@ -1,8 +1,9 @@
-"""Entity allowlist override for the lexplus10s model (LEX Plus 10 S Connect,
-dk=80/dkv=25, sbt=2). Also used for the "lexplus10" (sbt=1) sibling signature
-via "device_file": "lexplus10s" - no distinct fixture exists for the plain
-"LEX Plus 10" (non-S) variant, and both share the same dk/dkv/hardware family,
-differing only in maximum_salt_volume-style metadata already handled
+"""Entity allowlist override for the lexplus10s model.
+
+LEX Plus 10 S Connect (dk=80/dkv=25, sbt=2). Also used for the "lexplus10" (sbt=1)
+sibling signature via device_profile=lexplus10s.PROFILE - no distinct fixture exists for
+the plain "LEX Plus 10" (non-S) variant, and both share the same dk/dkv/hardware
+family, differing only in maximum_salt_volume-style metadata already handled
 elsewhere - pending confirmation if a real "LEX Plus 10" fixture ever exists.
 
 Derived from tests/fixtures/xml/SyrLEXplus10S_GetDeviceCollectionStatus.xml (no
@@ -21,56 +22,111 @@ Deliberately NOT included:
   instead, via alarm_style_alm).
 
 If real-device testing shows any of the above (or other) keys are actually
-used, move them into SENSOR_KNOWN_KEYS below.
+used, move them into SENSOR_SUPPORTED_KEYS below.
 """
 
-SENSOR_KNOWN_KEYS = {
+from . import WHU_UNITS_LEX, SyrConnectDeviceProfile
+from .lex import ALA_CODES
+
+SENSOR_SUPPORTED_KEYS = {
     # --- Connectivity ---
     "dst",
     # --- Flow ---
     "getFLO",
     # --- Alarm / Notification (alarm_style_alm: getALM/getNOT, no getALA/getWRN) ---
-    "getALM", "getNOT",
+    "getALM",
+    "getNOT",
     # --- Pressure ---
     "getPRS",
     # --- Water Quality ---
-    "getIWH", "getOWH", "getWHU",
+    "getIWH",
+    "getOWH",
+    "getWHU",
     # --- Device Status ---
-    "getDEN",
     # --- Resin Capacity ---
-    "getCS1", "getCS2", "getCS3",
+    "getCS1",
     # --- Salt ---
-    "getRDO", "getRES", "getSS1", "getSV1",
+    "getRDO",
+    "getRES",
+    "getSS1",
+    "getSV1",
     # --- Regeneration ---
-    "getCYN", "getCYT", "getINR", "getLAR", "getNOR", "getRG1",
-    "getRPD", "getRPW", "getRTH", "getRTI", "getRTM", "getSCR", "getTOR",
+    "getCYN",
+    "getCYT",
+    "getINR",
+    "getLAR",
+    "getNOR",
+    "getRG1",
+    "getRPD",
+    "getRPW",
+    "getRTI",
+    "getRTM",
+    "getSCR",
+    "getTOR",
     # --- Maintenance ---
-    "getDWF", "getVS1", "getVS2", "getVS3",
+    "getDWF",
     # --- Filter ---
-    "getFCO", "getPST",
+    "getFCO",
+    "getPST",
     # --- Device Info & Diagnostics ---
-    "getCDE", "getCNA", "getDGW", "getFIR", "getIPA", "getMAC", "getMAN", "getSRN",
-    "getTYP", "getVER",
+    "getCNA",
+    "getDGW",
+    "getFIR",
+    "getIPA",
+    "getMAC",
+    "getMAN",
+    "getSRN",
+    "getTYP",
+    "getVER",
     # --- Wi-Fi (optional module, same as the plain "lex" family) ---
-    "getAPT", "getEGW", "getEIP", "getMAC1", "getMAC2", "getWFC", "getWFR", "getWFS",
-    "getWGW", "getWIP",
+    "getAPT",
+    "getEGW",
+    "getEIP",
+    "getMAC1",
+    "getMAC2",
+    "getWFC",
+    "getWFR",
+    "getWFS",
+    "getWGW",
+    "getWIP",
 }
 
-SELECT_KNOWN_KEYS = {
-    "getIWH", "getOWH", "getRPD", "getRTM", "getSV1",
+SELECT_SUPPORTED_KEYS = {
+    "getIWH",
+    "getOWH",
+    "getRPD",
+    "getRTM",
+    "getSV1",
 }
 
 # No buzzer on this model.
-SWITCH_KNOWN_KEYS: set[str] = set()
+SWITCH_SUPPORTED_KEYS: set[str] = set()
 
 # No buzzer on this model.
-BINARY_SENSOR_KNOWN_KEYS: set[str] = set()
+BINARY_SENSOR_SUPPORTED_KEYS: set[str] = set()
 
 # setWRN excluded - no getWRN in the fixture. setDEX excluded - no
 # microleakage-test hardware on this model.
-BUTTON_KNOWN_KEYS = {
-    "setSIR", "setALA", "setNOT",
+BUTTON_SUPPORTED_KEYS = {
+    "setSIR",
+    "setALA",
+    "setNOT",
 }
 
 # No shutoff valve on this model (a conventional column softener).
-VALVE_KNOWN_KEYS: set[str] = set()
+VALVE_SUPPORTED_KEYS: set[str] = set()
+
+
+PROFILE = SyrConnectDeviceProfile(
+    ala_codes=ALA_CODES,
+    binary_sensor=BINARY_SENSOR_SUPPORTED_KEYS,
+    button=BUTTON_SUPPORTED_KEYS,
+    select=SELECT_SUPPORTED_KEYS,
+    sensor=SENSOR_SUPPORTED_KEYS,
+    sensor_factors={
+        "getFLO": 60,
+    },
+    switch=SWITCH_SUPPORTED_KEYS,
+    valve=VALVE_SUPPORTED_KEYS,
+    whu_units=WHU_UNITS_LEX,
+)

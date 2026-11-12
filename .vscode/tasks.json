@@ -25,7 +25,7 @@
         "--exec",
         "bash",
         "-lc",
-        "workspace_path=\"$(wslpath -u '${workspaceFolder}')\" && cd \"$workspace_path\" && \"$HOME/.venvs/syr_connect/bin/python\" -m pytest --timeout=10 tests"
+        "workspace_path=\"$(wslpath -u '${workspaceFolder}')\" && cd \"$workspace_path\" && \"$HOME/.venvs/conelclearpro_connect/bin/python\" -m pytest --timeout=10 tests"
       ],
       "group": "test",
       "presentation": {
@@ -52,7 +52,7 @@
       "label": "Pytest with Coverage",
       "detail": "Run tests with code coverage report",
       "type": "shell",
-      "command": "${command:python.interpreterPath} -m pytest tests --cov=custom_components.syr_connect --cov-report=term-missing --cov-report=html",
+      "command": "${command:python.interpreterPath} -m pytest tests --cov=custom_components.conelclearpro_connect --cov-report=term-missing --cov-report=html",
       "group": {
         "kind": "test",
         "isDefault": true
@@ -94,7 +94,7 @@
     {
       "label": "Mypy Type Check",
       "type": "shell",
-      "command": "${command:python.interpreterPath} -m mypy custom_components/syr_connect",
+      "command": "${command:python.interpreterPath} -m mypy",
       "group": {
         "kind": "test",
         "isDefault": true
@@ -106,9 +106,10 @@
       "problemMatcher": []
     },
     {
-      "label": "Install Dev Requirements",
+      "label": "Update Dev Requirements",
+      "detail": "Install or update pip and requirements-dev.txt to the newest allowed versions",
       "type": "shell",
-      "command": "${command:python.interpreterPath} -m pip install -r requirements-dev.txt",
+      "command": "${command:python.interpreterPath} -m pip install --upgrade pip -r requirements-dev.txt",
       "group": {
         "kind": "build",
         "isDefault": true
@@ -120,9 +121,40 @@
       "problemMatcher": []
     },
     {
+      "label": "Update Dev Requirements (WSL)",
+      "detail": "Install or update pip and requirements-dev.txt in the WSL venv used by Pytest (WSL)",
+      "type": "process",
+      "command": "${env:WINDIR}\\System32\\wsl.exe",
+      "args": [
+        "--distribution",
+        "Ubuntu",
+        "--exec",
+        "bash",
+        "-lc",
+        "workspace_path=\"$(wslpath -u '${workspaceFolder}')\" && cd \"$workspace_path\" && \"$HOME/.venvs/conelclearpro_connect/bin/python\" -m pip install --upgrade pip -r requirements-dev.txt"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Update Dev Environments",
+      "detail": "Update the Windows and the WSL development environment",
+      "dependsOn": [
+        "Update Dev Requirements",
+        "Update Dev Requirements (WSL)"
+      ],
+      "dependsOrder": "sequence",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
       "label": "Pre-commit Run All",
       "type": "shell",
-      "command": "pre-commit run --all-files",
+      "command": "prek run --all-files",
       "group": {
         "kind": "test",
         "isDefault": true

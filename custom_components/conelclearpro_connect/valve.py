@@ -1,102 +1,130 @@
 """Valve platform for SYR Connect (water shut-off valve)."""
-from __future__ import annotations
 
 import logging
+from typing import override
 
 from homeassistant.components.valve import (
     ValveDeviceClass,
     ValveEntity,
+    ValveEntityDescription,
     ValveEntityFeature,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import _SYR_CONNECT_SENSOR_EXCLUDED, _SYR_CONNECT_VALVE_KNOWN_KEYS
-from .coordinator import SyrConnectDataUpdateCoordinator
+from .const import DOMAIN
+from .coordinator import SyrConnectConfigEntry, SyrConnectDataUpdateCoordinator
+from .data import SyrConnectDevice
+from .entity import SyrConnectEntity, async_add_device_entities
 from .exceptions import SyrConnectError
 from .helpers import (
-    build_device_info,
-    build_entity_id,
     build_set_ab_command,
-    build_unique_id,
-    get_model_known_keys,
+    get_device_model,
+    get_model_supported_keys,
     get_sensor_ab_value,
     registry_cleanup,
 )
-from .models import detect_model
 
 _LOGGER = logging.getLogger(__name__)
 
 # Limit parallel updates to avoid overwhelming the API
 PARALLEL_UPDATES = 1
 
+# Descriptions of all valves
+_conelclearpro_connect_VALVE_TYPES: tuple[ValveEntityDescription, ...] = (
+    ValveEntityDescription(
+        key="getAB",  # Valve shutoff control / state
+        device_class=ValveDeviceClass.WATER,
+        # Opening/closing comes from the discrete getVLV codes, there is no position value
+        reports_position=False,
+    ),
+)
+
+_conelclearpro_connect_VALVE_DESCRIPTIONS: dict[str, ValveEntityDescription] = {
+    description.key: description for description in _conelclearpro_connect_VALVE_TYPES
+}
+
+# Supported keys for the valve platform — used by registry_cleanup to remove stale entries.
+_conelclearpro_connect_VALVE_SUPPORTED_KEYS = set(_conelclearpro_connect_VALVE_DESCRIPTIONS)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: SyrConnectConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up valve entities for SYR Connect."""
-    # Discover and create valve entities for devices that expose
-    # either a control sensor (`getAB`) or a status sensor (`getVLV`).
+    # Discover and create valve entities for devices that expose the
+    # control key `getAB` (see _build_device_valves).
     # We perform light validation of the values to avoid creating
     # entities for non-numeric or unexpected sensor payloads.
     _LOGGER.debug("Setting up SYR Connect valve entities")
-    coordinator: SyrConnectDataUpdateCoordinator = entry.runtime_data
+    coordinator = entry.runtime_data
 
     if not coordinator.data:
         _LOGGER.warning("No coordinator data available for valve platform")
         return
 
     registry_cleanup(
-        hass, coordinator.data, "valve",
-        allowed_keys=_SYR_CONNECT_VALVE_KNOWN_KEYS - _SYR_CONNECT_SENSOR_EXCLUDED,
+        hass,
+        coordinator.data,
+        "valve",
+        allowed_keys=_conelclearpro_connect_VALVE_SUPPORTED_KEYS,
         entry_id=coordinator.entry_id,
     )
 
+    async_add_device_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        lambda device: _build_device_valves(coordinator, device),
+    )
+
+
+def _build_device_valves(
+    coordinator: SyrConnectDataUpdateCoordinator, device: SyrConnectDevice
+) -> list[SyrConnectValve]:
+    """Return the shut-off valve of one device, if it has one."""
     entities: list[SyrConnectValve] = []
-    for device in coordinator.data.get("devices", []):
-        device_id = device.get("id")
-        device_name = device.get("name", device_id)
-        # Per-device status dictionary from the coordinator payload
-        status = device.get("status", {})
-        # Create a valve entity only when the device exposes `getAB` (the
-        # actual valve control key) AND the model's allowlist permits it.
-        # `getVLV` is a read-only status sensor and is handled exclusively
-        # by the sensor platform.
-        known_valve_keys = get_model_known_keys(detect_model(status), "valve", _SYR_CONNECT_VALVE_KNOWN_KEYS)
-        ab_value = status.get("getAB") if "getAB" in known_valve_keys else None
-        create = False
-        # If `getAB` looks like a control value (numeric 1/2 or boolean),
-        # treat the device as a valve that can be controlled.
-        try:
-            if ab_value is not None and ab_value != "":
+    device_id = device["id"]
+    device_name = device["name"]
+    # Per-device status dictionary from the coordinator payload
+    status = device.get("status", {})
+    # Create a valve entity only when the device exposes `getAB` (the
+    # actual valve control key) AND the model's allowlist permits it.
+    # `getVLV` is a read-only status sensor and is handled exclusively
+    # by the sensor platform.
+    supported_valve_keys = get_model_supported_keys(
+        get_device_model(device), "valve", _conelclearpro_connect_VALVE_SUPPORTED_KEYS
+    )
+    ab_value = status.get("getAB") if "getAB" in supported_valve_keys else None
+    create = False
+    # If `getAB` looks like a control value (numeric 1/2 or boolean),
+    # treat the device as a valve that can be controlled.
+    try:
+        if ab_value is not None and ab_value != "":
+            if (
                 # Native boolean from JSON
-                if isinstance(ab_value, bool):
-                    create = True
+                isinstance(ab_value, bool)
                 # Boolean-like strings
-                elif isinstance(ab_value, str) and ab_value.strip().lower() in ("true", "false"):
-                    create = True
+                or (
+                    isinstance(ab_value, str)
+                    and ab_value.strip().lower() in ("true", "false")
+                )
                 # Numeric representation (1=open, 2=closed)
-                elif int(float(ab_value)) in (1, 2):
-                    create = True
-        except (ValueError, TypeError):
-            create = False
+                or int(float(ab_value)) in (1, 2)
+            ):
+                create = True
+    except ValueError, TypeError, OverflowError:
+        create = False
 
-        if create:
-            entities.append(SyrConnectValve(coordinator, device_id, device_name))
-
-    if entities:
-        _LOGGER.debug("Adding %d valve(s) total", len(entities))
-        async_add_entities(entities)
-    else:
-        _LOGGER.debug("No valve entities to add")
+    if create:
+        entities.append(SyrConnectValve(coordinator, device_id, device_name))
+    return entities
 
 
-class SyrConnectValve(CoordinatorEntity, ValveEntity):
+class SyrConnectValve(SyrConnectEntity, ValveEntity):
     """Representation of a SYR Connect valve (shut-off).
 
     The entity exposes `is_closed`, `is_opening` and `is_closing`
@@ -112,45 +140,17 @@ class SyrConnectValve(CoordinatorEntity, ValveEntity):
         coordinator: SyrConnectDataUpdateCoordinator,
         device_id: str,
         device_name: str,
-        sensor_key: str | None = None,
     ) -> None:
-        """Initialize the valve entity.
+        """Initialize the valve entity for the shut-off valve (getAB).
 
         Args:
             coordinator: Data update coordinator
             device_id: Device ID (serial number)
             device_name: Device display name
-            sensor_key: Sensor key (e.g., 'getBUZ')
         """
-        super().__init__(coordinator)
-
-        self._device_id = device_id
-        self._device_name = device_name
-        # support legacy callers that omit sensor_key
-        self._sensor_key = sensor_key or "getAB"
-
-        # Set unique ID and translation key
-        self._attr_has_entity_name = True
-        self._attr_translation_key = self._sensor_key.lower()
-        self._attr_unique_id = build_unique_id(coordinator.entry_id, device_id, self._sensor_key)
-
-        # Keep a typed reference to the coordinator to access integration-specific helpers
-        self._sc_coordinator: SyrConnectDataUpdateCoordinator = coordinator
-
-        # Override the entity_id to use technical name (serial number) with domain prefix
-        self.entity_id = build_entity_id("valve", device_id, self._sensor_key)
-
-        # Build device info from coordinator data
-        self._attr_device_info = build_device_info(device_id, device_name, coordinator.data)
-
-        # Enable valve entities by default
-        self._attr_entity_registry_enabled_default = True
-
-        # This integration does not report a continuous position value
-        # (we expose opening/closing via discrete `getVLV` codes). Set
-        # `reports_position` to False so Home Assistant will not expect
-        # a numeric position attribute.
-        self._attr_reports_position = False
+        self._sensor_key = "getAB"
+        super().__init__(coordinator, device_id, device_name, "valve", self._sensor_key)
+        self.entity_description = _conelclearpro_connect_VALVE_DESCRIPTIONS[self._sensor_key]
 
         # Advertise supported actions (open and close) as a bitmask
         # using the ValveEntityFeature IntFlag. Home Assistant expects
@@ -159,36 +159,15 @@ class SyrConnectValve(CoordinatorEntity, ValveEntity):
             ValveEntityFeature.OPEN | ValveEntityFeature.CLOSE
         )
 
-        # Device class: represent this entity as a water valve in the
-        # Home Assistant UI.
-        self._attr_device_class = ValveDeviceClass.WATER
-
-    def _get_device(self) -> dict | None:
-        """Return the device dict for this entity, or None if not present."""
-        for dev in self.coordinator.data.get("devices", []):
-            if dev.get("id") == self._device_id:
-                return dev
-        return None
-
-    def _get_status(self) -> dict | None:
-        """Return the status dict for this entity's device, or None.
-
-        The coordinator stores a list of devices; this helper locates
-        the current device by id and returns its `status` mapping.
-        """
-        dev = self._get_device()
-        if not dev:
-            return None
-        return dev.get("status", {})
-
     @property
+    @override
     def extra_state_attributes(self) -> dict[str, str] | None:
         """Return additional state attributes including raw API values.
 
         We expose the raw `getVLV` and `getAB` values as attributes so
         users and automations can inspect the low-level API payload.
         """
-        status = self._get_status()
+        status = self._status
         if not status:
             return None
         attrs: dict[str, str] = {}
@@ -201,101 +180,105 @@ class SyrConnectValve(CoordinatorEntity, ValveEntity):
         return attrs
 
     @property
+    @override
     def is_closed(self) -> bool | None:
         """Return True if valve is closed, False if open, None if unknown."""
-        status = self._get_status()
-        if status is None:
+        if self._device is None:
             return None
+        status = self._status
 
         return get_sensor_ab_value(status)
 
     @property
+    @override
     def is_opening(self) -> bool | None:
         """Return True if valve is currently opening.
 
         This maps `getVLV == 21` to an opening state.
         """
-        status = self._get_status()
-        if status is None:
+        if self._device is None:
             return None
+        status = self._status
         vlv = status.get("getVLV")
         if vlv is None or vlv == "":
             return None
         try:
             return int(float(vlv)) == 21
-        except (ValueError, TypeError):
+        except ValueError, TypeError, OverflowError:
             return None
 
     @property
+    @override
     def is_closing(self) -> bool | None:
         """Return True if valve is currently closing.
 
         This maps `getVLV == 11` to a closing state.
         """
-        status = self._get_status()
-        if status is None:
+        if self._device is None:
             return None
+        status = self._status
         vlv = status.get("getVLV")
         if vlv is None or vlv == "":
             return None
         try:
             return int(float(vlv)) == 11
-        except (ValueError, TypeError):
+        except ValueError, TypeError, OverflowError:
             return None
-
-    @property
-    def available(self) -> bool:
-        if not self.coordinator.last_update_success:
-            return False
-        for device in self.coordinator.data.get("devices", []):
-            if device.get("id") == self._device_id:
-                return device.get("available", True)
-        return True
 
     async def async_open(self) -> None:
         """Open the valve (send `setAB` -> open value)."""
-        ab_cmd = build_set_ab_command(self._get_status() or {}, False)
+        ab_cmd = build_set_ab_command(self._status, False)
         if ab_cmd is None:
-            raise HomeAssistantError(f"Cannot open valve {self._device_id}: unknown getAB format")
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="valve_unknown_format",
+                translation_placeholders={"device": self._device_name},
+            )
         set_key, set_val = ab_cmd
 
         try:
             # Send command to backend; prepend alarm-clear when an alarm is active.
-            await self._sc_coordinator.async_open_valve(self._device_id, set_key, set_val)
-        except (SyrConnectError, ValueError, TypeError, KeyError, RuntimeError) as err:  # pragma: no cover - defensive
+            await self.coordinator.async_open_valve(self._device_id, set_key, set_val)
+        except (SyrConnectError, ValueError, TypeError, KeyError, RuntimeError) as err:
             _LOGGER.error("Failed to open valve %s: %s", self._device_id, err)
-            raise HomeAssistantError(f"Failed to open valve {self._device_id}: {err}") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="valve_open_failed",
+                translation_placeholders={"device": self._device_name},
+            ) from err
 
     async def async_close(self) -> None:
         """Close the valve (send `setAB` -> close value).
 
         See `async_open` for behavior and error handling.
         """
-        ab_cmd = build_set_ab_command(self._get_status() or {}, True)
+        ab_cmd = build_set_ab_command(self._status, True)
         if ab_cmd is None:
-            raise HomeAssistantError(f"Cannot close valve {self._device_id}: unknown getAB format")
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="valve_unknown_format",
+                translation_placeholders={"device": self._device_name},
+            )
         set_key, set_val = ab_cmd
 
         try:
-            await self._sc_coordinator.async_set_device_value(self._device_id, set_key, set_val)
-        except (SyrConnectError, ValueError, TypeError, KeyError, RuntimeError) as err:  # pragma: no cover - defensive
+            await self.coordinator.async_set_device_value(
+                self._device_id, set_key, set_val
+            )
+        except (SyrConnectError, ValueError, TypeError, KeyError, RuntimeError) as err:
             _LOGGER.error("Failed to close valve %s: %s", self._device_id, err)
-            raise HomeAssistantError(f"Failed to close valve {self._device_id}: {err}") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="valve_close_failed",
+                translation_placeholders={"device": self._device_name},
+            ) from err
 
+    @override
     async def async_open_valve(self) -> None:
         """Async service entrypoint to open the valve."""
         await self.async_open()
 
-    def open_valve(self) -> None:
-        """Sync service entrypoint to open the valve (schedules async task)."""
-        if self.hass is not None:
-            self.hass.async_create_task(self.async_open())
-
+    @override
     async def async_close_valve(self) -> None:
         """Async service entrypoint to close the valve."""
         await self.async_close()
-
-    def close_valve(self) -> None:
-        """Sync service entrypoint to close the valve (schedules async task)."""
-        if self.hass is not None:
-            self.hass.async_create_task(self.async_close())

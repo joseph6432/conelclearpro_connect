@@ -1,16 +1,17 @@
 """Test the SYR Connect exceptions."""
 
-from homeassistant.exceptions import HomeAssistantError
+import pytest
 
-from custom_components.syr_connect.exceptions import (
+from custom_components.conelclearpro_connect.exceptions import (
     SyrConnectAuthError,
     SyrConnectConnectionError,
     SyrConnectError,
     SyrConnectInvalidResponseError,
 )
+from homeassistant.exceptions import HomeAssistantError
 
 
-def test_exception_hierarchy():
+def test_exception_hierarchy() -> None:
     """Test that all exceptions inherit correctly."""
     assert issubclass(SyrConnectError, HomeAssistantError)
     assert issubclass(SyrConnectAuthError, SyrConnectError)
@@ -18,28 +19,28 @@ def test_exception_hierarchy():
     assert issubclass(SyrConnectInvalidResponseError, SyrConnectError)
 
 
-def test_auth_error():
+def test_auth_error() -> None:
     """Test authentication error."""
     error = SyrConnectAuthError("Invalid credentials")
     assert str(error) == "Invalid credentials"
     assert isinstance(error, SyrConnectError)
 
 
-def test_connection_error():
+def test_connection_error() -> None:
     """Test connection error."""
     error = SyrConnectConnectionError("Cannot connect to API")
     assert str(error) == "Cannot connect to API"
     assert isinstance(error, SyrConnectError)
 
 
-def test_invalid_response_error():
+def test_invalid_response_error() -> None:
     """Test invalid response error."""
     error = SyrConnectInvalidResponseError("Malformed XML")
     assert str(error) == "Malformed XML"
     assert isinstance(error, SyrConnectError)
 
 
-def test_exception_can_be_caught_as_base():
+def test_exception_can_be_caught_as_base() -> None:
     """Test that specific exceptions can be caught as base exception."""
     try:
         raise SyrConnectAuthError("Test")
@@ -47,11 +48,10 @@ def test_exception_can_be_caught_as_base():
         pass  # Should catch it
 
 
-def test_exception_with_cause():
+def test_exception_with_cause() -> None:
     """Test exceptions with cause."""
     original = ValueError("Original error")
 
-    try:
+    with pytest.raises(SyrConnectAuthError) as excinfo:
         raise SyrConnectAuthError("Auth failed") from original
-    except SyrConnectAuthError as e:
-        assert e.__cause__ == original
+    assert excinfo.value.__cause__ == original

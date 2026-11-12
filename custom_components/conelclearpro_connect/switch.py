@@ -1,132 +1,156 @@
 """Switch platform for SYR Connect integration."""
 
-from __future__ import annotations
-
 import logging
-from typing import cast
+from typing import Any, override
 
-from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    _SYR_CONNECT_SENSOR_CONFIG,
-    _SYR_CONNECT_SENSOR_EXCLUDED,
-    _SYR_CONNECT_SWITCH_KNOWN_KEYS,
-    DOMAIN,
+from .const import DOMAIN
+from .coordinator import SyrConnectConfigEntry, SyrConnectDataUpdateCoordinator
+from .data import SyrConnectDevice
+from .entity import SyrConnectEntity, async_add_device_entities
+from .exceptions import SyrConnectError
+from .helpers import (
+    build_unique_id,
+    get_device_model,
+    get_model_supported_keys,
+    is_value_true,
+    registry_cleanup,
 )
-from .coordinator import SyrConnectDataUpdateCoordinator
-from .helpers import build_device_info, build_entity_id, build_unique_id, get_model_known_keys, registry_cleanup
-from .models import detect_model
 
 _LOGGER = logging.getLogger(__name__)
+
+# Limit parallel updates to avoid overwhelming the API
+PARALLEL_UPDATES = 1
+
+
+# Descriptions of all switches (boolean get<KEY>/set<KEY> settings)
+_conelclearpro_connect_SWITCH_TYPES: tuple[SwitchEntityDescription, ...] = (
+    SwitchEntityDescription(
+        key="getBPB",  # Profile change by button allowed (0 = blocked, 1 = allowed)
+        entity_category=EntityCategory.CONFIG,
+    ),
+    SwitchEntityDescription(
+        key="getBUZ",  # Buzzer on/off
+        entity_category=EntityCategory.CONFIG,
+    ),
+    SwitchEntityDescription(
+        key="getDFI",  # Filling mode enabled flag (Conel Clear Pro Fill)
+        entity_category=EntityCategory.CONFIG,
+    ),
+    SwitchEntityDescription(
+        key="getIFL",  # Initial filling active flag (All in One +)
+        entity_category=EntityCategory.CONFIG,
+    ),
+    SwitchEntityDescription(
+        key="getMFL",  # Manual filling active flag (All in One +)
+        entity_category=EntityCategory.CONFIG,
+    ),
+    SwitchEntityDescription(
+        key="getSSA",  # Automatic backwash enabled flag (RSA)
+        entity_category=EntityCategory.CONFIG,
+    ),
+    SwitchEntityDescription(
+        key="getSSE",  # Backwash reminder enabled flag (RSA)
+        entity_category=EntityCategory.CONFIG,
+    ),
+)
+
+_conelclearpro_connect_SWITCH_DESCRIPTIONS: dict[str, SwitchEntityDescription] = {
+    description.key: description for description in _conelclearpro_connect_SWITCH_TYPES
+}
+
+# Supported keys for the switch platform — used by registry_cleanup to remove stale entries.
+_conelclearpro_connect_SWITCH_SUPPORTED_KEYS = set(_conelclearpro_connect_SWITCH_DESCRIPTIONS)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: SyrConnectConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up boolean switch entities (e.g. getBUZ, getDFI)."""
-    coordinator: SyrConnectDataUpdateCoordinator = entry.runtime_data
+    coordinator = entry.runtime_data
 
     if not coordinator.data:
         _LOGGER.warning("No coordinator data available for switch platform")
         return
 
     registry_cleanup(
-        hass, coordinator.data, "switch",
-        allowed_keys=_SYR_CONNECT_SWITCH_KNOWN_KEYS - _SYR_CONNECT_SENSOR_EXCLUDED,
+        hass,
+        coordinator.data,
+        "switch",
+        allowed_keys=_conelclearpro_connect_SWITCH_SUPPORTED_KEYS,
         entry_id=coordinator.entry_id,
     )
 
-    entities = []
-    devices = coordinator.data.get("devices", [])
-    _LOGGER.debug("Found %d devices in coordinator data.", len(devices))
-    for device in devices:
-        device_id = device.get("id")
-        device_name = device.get("name", device_id)
-        project_id = device.get("project_id", "")
-        status = device.get("status", {})
-        _LOGGER.debug("Checking device: id=%s, name=%s, status_keys=%s", device_id, device_name, list(status.keys()))
+    async_add_device_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        lambda device: _build_device_switches(coordinator, device),
+    )
 
-        # Scope to the detected model (falls back to the global allowlist for
-        # models that haven't opted into per-model key lists).
-        known_switch_keys = get_model_known_keys(detect_model(status), "switch", _SYR_CONNECT_SWITCH_KNOWN_KEYS)
 
-        for sensor_key in sorted(known_switch_keys):
-            if sensor_key not in status:
-                _LOGGER.debug("%s not found in status for device %s.", sensor_key, device_id)
-                continue
-            _LOGGER.debug("%s found in status for device %s. Creating SyrConnectBooleanSwitch.", sensor_key, device_id)
-            try:
-                entity = SyrConnectBooleanSwitch(
-                    coordinator,
-                    device_id,
-                    device_name,
-                    project_id,
-                    sensor_key,
-                )
-                # If a registry entry already exists for this unique_id,
-                # prefer the registry's entity_id to avoid creating a new
-                # entity with a "_2" suffix.
-                try:
-                    registry = er.async_get(hass)
-                    uid = getattr(entity, "_attr_unique_id", None)
-                    if uid:
-                        existing_entity_id = registry.async_get_entity_id("switch", DOMAIN, uid)
-                        if existing_entity_id:
-                            entity.entity_id = existing_entity_id
-                            _LOGGER.debug(
-                                "Using existing registry entity_id %s for unique_id %s",
-                                existing_entity_id,
-                                uid,
-                            )
-                except Exception:
-                    _LOGGER.exception("Failed to check entity registry for existing switch entity")
+def _build_device_switches(
+    coordinator: SyrConnectDataUpdateCoordinator, device: SyrConnectDevice
+) -> list[SyrConnectBooleanSwitch]:
+    """Return the switches of one device."""
+    entities: list[SyrConnectBooleanSwitch] = []
+    device_id = device["id"]
+    device_name = device["name"]
+    status = device.get("status", {})
+    _LOGGER.debug(
+        "Checking device: id=%s, name=%s, status_keys=%s",
+        device_id,
+        device_name,
+        list(status.keys()),
+    )
 
-                entities.append(entity)
-                _LOGGER.debug(
-                    "Appended SyrConnectBooleanSwitch for device %s (entity_id=%s, unique_id=%s)",
-                    device_id,
-                    getattr(entity, "entity_id", None),
-                    getattr(entity, "_attr_unique_id", None),
-                )
-            except Exception as err:
-                _LOGGER.error("Failed to instantiate SyrConnectBooleanSwitch for device %s: %s", device_id, err)
-    if entities:
-        async_add_entities(entities)
+    # Scope to the detected model (falls back to the global allowlist for
+    # models that haven't opted into per-model key lists).
+    supported_switch_keys = get_model_supported_keys(
+        get_device_model(device), "switch", _conelclearpro_connect_SWITCH_SUPPORTED_KEYS
+    )
+
+    for sensor_key in sorted(supported_switch_keys):
+        if sensor_key not in status:
+            _LOGGER.debug(
+                "%s not found in status for device %s.", sensor_key, device_id
+            )
+            continue
+        _LOGGER.debug(
+            "%s found in status for device %s. Creating SyrConnectBooleanSwitch.",
+            sensor_key,
+            device_id,
+        )
         try:
-            registry = er.async_get(hass)
-            missing = []
-            for ent in entities:
-                entity_id = getattr(ent, "entity_id", None)
-                unique_id = getattr(ent, "_attr_unique_id", None)
-                # Prefer lookup by entity_id; fall back to unique_id lookup
-                if entity_id and registry.async_get(entity_id) is None:
-                    # Try lookup by unique_id
-                    if unique_id:
-                        found = registry.async_get_entity_id("switch", DOMAIN, unique_id)
-                        if found is None:
-                            missing.append((entity_id, unique_id))
-                    else:
-                        missing.append((entity_id, unique_id))
-            if missing:
-                _LOGGER.warning(
-                    "Some switch entities were created but are missing from the entity registry: %s",
-                    missing,
-                )
+            entity = SyrConnectBooleanSwitch(
+                coordinator,
+                device_id,
+                device_name,
+                sensor_key,
+            )
+            entities.append(entity)
+            _LOGGER.debug(
+                "Appended SyrConnectBooleanSwitch for device %s (entity_id=%s, unique_id=%s)",
+                device_id,
+                getattr(entity, "entity_id", None),
+                getattr(entity, "_attr_unique_id", None),
+            )
         except Exception:
-            _LOGGER.exception("Failed to verify entity registry for created switch entities")
-    else:
-        _LOGGER.debug("No boolean switch entities found for any device.")
+            _LOGGER.exception(
+                "Failed to instantiate SyrConnectBooleanSwitch for device %s",
+                device_id,
+            )
+    return entities
 
 
-class SyrConnectBooleanSwitch(CoordinatorEntity, SwitchEntity):
+class SyrConnectBooleanSwitch(SyrConnectEntity, SwitchEntity):
     """Generic switch entity for boolean get<KEY>/set<KEY> settings (e.g. getBUZ, getDFI)."""
 
     def __init__(
@@ -134,69 +158,48 @@ class SyrConnectBooleanSwitch(CoordinatorEntity, SwitchEntity):
         coordinator: SyrConnectDataUpdateCoordinator,
         device_id: str,
         device_name: str,
-        project_id: str,
         sensor_key: str,
     ) -> None:
         """Initialize the switch."""
-        _LOGGER.debug("Initializing SyrConnectBooleanSwitch: device_id=%s, name=%s, sensor_key=%s", device_id, device_name, sensor_key)
-        super().__init__(coordinator)
+        _LOGGER.debug(
+            "Initializing SyrConnectBooleanSwitch: device_id=%s, name=%s, sensor_key=%s",
+            device_id,
+            device_name,
+            sensor_key,
+        )
+        super().__init__(coordinator, device_id, device_name, "switch", sensor_key)
 
-        self._device_id = device_id
-        self._device_name = device_name
-        self._project_id = project_id
         self._sensor_key = sensor_key
+        self.entity_description = _conelclearpro_connect_SWITCH_DESCRIPTIONS[sensor_key]
 
-        # Set unique ID and translation platform
         # Use a platform-specific suffix to avoid unique_id collision with the
         # binary_sensor that represents the same underlying key (getBUZ).
         # Only lowercase device_id/key, not entry_id (a case-sensitive ULID) -
         # otherwise this would never match the entry_id casing written by the
         # v6->v7 registry migration.
-        self._attr_unique_id = build_unique_id(coordinator.entry_id, device_id.lower(), f"{sensor_key}_switch".lower())
-        self._attr_has_entity_name = True
-        self._attr_translation_key = sensor_key.lower()
-
-        # Override the entity_id to use technical name (serial number) with domain prefix
-        self.entity_id = build_entity_id("switch", device_id, sensor_key)
-
-        # Build device info so the entity is linked to its device in the UI
-        self._attr_device_info = build_device_info(device_id, device_name, coordinator.data)
-
-        # Set entity category if this key is a config entity
-        if sensor_key in _SYR_CONNECT_SENSOR_CONFIG:
-            self._attr_entity_category = EntityCategory.CONFIG
+        self._attr_unique_id = build_unique_id(
+            coordinator.entry_id, device_id.lower(), f"{sensor_key}_switch".lower()
+        )
 
     @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        if not self.coordinator.last_update_success:
-            return False
-        for device in self.coordinator.data.get("devices", []):
-            if device["id"] == self._device_id:
-                return device.get("available", True)
-        return True
-
-    @property
+    @override
     def is_on(self) -> bool | None:
         """Return True if the setting is enabled."""
-        device = next((d for d in self.coordinator.data.get("devices", []) if d["id"] == self._device_id), None)
-        if not device:
+        if self._device is None:
             return None
-        status = device.get("status", {})
-        value = status.get(self._sensor_key)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.strip().lower() in ("1", "true", "on", "yes")
-        if isinstance(value, int | float):
-            return int(value) != 0
-        return None
+        value = self._status.get(self._sensor_key)
+        if value is None:
+            return None
+        # A reported but unknown value (e.g. empty) is shown as off
+        return is_value_true(value)
 
-    async def async_turn_on(self, **kwargs):
+    @override
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the setting on."""
         await self._set_value(True)
 
-    async def async_turn_off(self, **kwargs):
+    @override
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the setting off."""
         await self._set_value(False)
 
@@ -204,11 +207,7 @@ class SyrConnectBooleanSwitch(CoordinatorEntity, SwitchEntity):
         """Set the boolean value via API."""
         # Mirror the exact type of the current getter value so the setter
         # uses the same format the device expects.
-        device = next(
-            (d for d in self.coordinator.data.get("devices", []) if d["id"] == self._device_id),
-            None,
-        )
-        current = device.get("status", {}).get(self._sensor_key) if device else None
+        current = self._status.get(self._sensor_key)
         value: bool | int | str
         if isinstance(current, bool):
             value = state
@@ -222,9 +221,22 @@ class SyrConnectBooleanSwitch(CoordinatorEntity, SwitchEntity):
         set_key = f"set{self._sensor_key[3:]}"
         try:
             # Use coordinator.async_set_device_value so the DCLG is resolved correctly
-            # `CoordinatorEntity.coordinator` is typed as DataUpdateCoordinator in the base
-            # class; cast to our concrete coordinator type so mypy recognizes the method.
-            await cast(SyrConnectDataUpdateCoordinator, self.coordinator).async_set_device_value(self._device_id, set_key, value)
-        except Exception as err:
-            _LOGGER.error("Failed to set %s for device %s: %s", set_key, self._device_id, err)
+            await self.coordinator.async_set_device_value(
+                self._device_id, set_key, value
+            )
+        except (SyrConnectError, ValueError, TypeError, KeyError) as err:
+            # Report the failure to the caller (UI, automation) like valve/select/button do;
+            # swallowing it would make the service call look successful. The coordinator has
+            # already restored the previous value.
+            _LOGGER.error(
+                "Failed to set %s for device %s: %s", set_key, self._device_id, err
+            )
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="set_value_failed",
+                translation_placeholders={
+                    "device": self._device_name,
+                    "entity": self._entity_name,
+                },
+            ) from err
         await self.coordinator.async_request_refresh()

@@ -3,7 +3,7 @@
 Model type: Backwash filter with pressure reducer (DM) + leak protection (LS)
 
 This is a POSITIVE list: only keys confirmed to be meaningful for this model
-are listed, unlike the shared global allowlists in const.py which have to
+are listed, unlike the shared global allowlists of the platforms which have to
 cover every supported model at once.
 
 Derived from tests/fixtures/xml/SyrTrioLock_GetDeviceCollectionStatus.xml,
@@ -26,79 +26,219 @@ Deliberately NOT included:
   that file's fixture is actually the unrelated A25 Leak Protection Module
   (dkv=501), a product not covered by this TRIO-Lock-specific matrix.
 - getTYP: 0 in the fixture; no other muco_*.py sibling includes it either.
+- getCNL: reported (10 in the JSON fixture), but the conductivity limit needs
+  a conductivity sensor, which the matrix marks X (CND) for TRIO Lock.
 - getT2: appears alone without its usual getT1/getLE/getUL siblings (the
   single-profile leak keys) - too little evidence to include alone, same
   reasoning as lexplus10sl.py.
-- Self-learning phase (getSLE/getSLF/getSLP/getSLT/getSLV): all reported as
-  constant 0 in the fixture - same stub pattern muco_leakprotect excluded
-  (even a genuinely non-zero getSLF was left out there pending confirmation).
-- getVPS1, getVPS2, getIWH, getOWH, getWHU, getSTA, getTMP: not present in
-  the fixture at all.
+- getVPS1, getVPS2, getIWH, getOWH, getWHU, getSTA: not present in the fixture
+  at all.
+
+The self-learning phase and the temporary deactivation (getTMP) are included
+although the fixture reports no self-learning results and no getTMP: the
+official API documentation lists both for TRIO Lock Connect, and the
+muco_leakprotect sibling with the same firmware reports real self-learning
+results.
 
 If real-device testing shows any of the above (or other) keys are actually
-used, move them into SENSOR_KNOWN_KEYS below.
+used, move them into SENSOR_SUPPORTED_KEYS below.
 """
 
-SENSOR_KNOWN_KEYS = {
+from . import WHU_UNITS_MUCO, SyrConnectDeviceProfile
+
+SENSOR_SUPPORTED_KEYS = {
     # --- Connectivity ---
     "dst",
     # --- Valve & Flow ---
-    "getAB", "getAVO", "getFLO", "getVLV",
+    "getAB",
+    "getAVO",
+    "getFLO",
+    "getVLV",
     # --- Alarm / Notification / Warning ---
-    "getALA", "getALM", "getALN", "getALW", "getNOT", "getWRN",
+    "getALA",
+    "getALM",
+    "getALN",
+    "getALW",
+    "getNOT",
+    "getWRN",
     # --- Pressure ---
     "getBAR2",
     # --- Voltage / Battery ---
-    "getBAP", "getBAT", "getNET",
+    "getBAP",
+    "getBAT",
+    "getNET",
     # --- Water Consumption & Volume ---
-    "getLTV", "getVOL",
+    "getLTV",
+    "getVOL",
     # --- Alarm Duration ---
     "getALD",
+    # --- Self-Learning Phase ---
+    "getSLE",
+    "getSLF",
+    "getSLO",
+    "getSLP",
+    "getSLT",
+    "getSLV",
+    "getSMF",
+    "getSOF",
     # --- Microleakage Test ---
-    "getDBD", "getDMA", "getDRP", "getDSV", "getDTT", "getNPS",
+    "getDBD",
+    "getDBT",
+    "getDCM",
+    "getDMA",
+    "getDOM",
+    "getDPL",
+    "getDRP",
+    "getDST",
+    "getDSV",
+    "getDTC",
+    "getDTT",
+    "getNPS",
+    # --- Leak Protection (warning threshold; deactivation timer) ---
+    "getLWT",
+    "getTMP",
     # --- Leak Protection Profiles 1-8 ---
-    "getPA1", "getPA2", "getPA3", "getPA4", "getPA5", "getPA6", "getPA7", "getPA8",
-    "getPB1", "getPB2", "getPB3", "getPB4", "getPB5", "getPB6", "getPB7", "getPB8",
-    "getPF1", "getPF2", "getPF3", "getPF4", "getPF5", "getPF6", "getPF7", "getPF8",
-    "getPM1", "getPM2", "getPM3", "getPM4", "getPM5", "getPM6", "getPM7", "getPM8",
-    "getPN1", "getPN2", "getPN3", "getPN4", "getPN5", "getPN6", "getPN7", "getPN8",
-    "getPR1", "getPR2", "getPR3", "getPR4", "getPR5", "getPR6", "getPR7", "getPR8",
-    "getPT1", "getPT2", "getPT3", "getPT4", "getPT5", "getPT6", "getPT7", "getPT8",
-    "getPV1", "getPV2", "getPV3", "getPV4", "getPV5", "getPV6", "getPV7", "getPV8",
-    "getPW1", "getPW2", "getPW3", "getPW4", "getPW5", "getPW6", "getPW7", "getPW8",
+    "getPA1",
+    "getPA2",
+    "getPA3",
+    "getPA4",
+    "getPA5",
+    "getPA6",
+    "getPA7",
+    "getPA8",
+    "getPB1",
+    "getPB2",
+    "getPB3",
+    "getPB4",
+    "getPB5",
+    "getPB6",
+    "getPB7",
+    "getPB8",
+    "getPF1",
+    "getPF2",
+    "getPF3",
+    "getPF4",
+    "getPF5",
+    "getPF6",
+    "getPF7",
+    "getPF8",
+    "getPM1",
+    "getPM2",
+    "getPM3",
+    "getPM4",
+    "getPM5",
+    "getPM6",
+    "getPM7",
+    "getPM8",
+    "getPN1",
+    "getPN2",
+    "getPN3",
+    "getPN4",
+    "getPN5",
+    "getPN6",
+    "getPN7",
+    "getPN8",
+    "getPR1",
+    "getPR2",
+    "getPR3",
+    "getPR4",
+    "getPR5",
+    "getPR6",
+    "getPR7",
+    "getPR8",
+    "getPT1",
+    "getPT2",
+    "getPT3",
+    "getPT4",
+    "getPT5",
+    "getPT6",
+    "getPT7",
+    "getPT8",
+    "getPV1",
+    "getPV2",
+    "getPV3",
+    "getPV4",
+    "getPV5",
+    "getPV6",
+    "getPV7",
+    "getPV8",
+    "getPW1",
+    "getPW2",
+    "getPW3",
+    "getPW4",
+    "getPW5",
+    "getPW6",
+    "getPW7",
+    "getPW8",
     "getPRF",
+    "getPRN",
     # --- Filter ---
     "getFFM",
     # --- Display ---
     "getSRO",
     # --- Lock / Connection Centre ---
-    "getNMS", "getNMT", "getNPT",
+    "getNMS",
+    "getNMT",
+    "getNPT",
     # --- Device Status ---
     "getDFM",
     # --- Device Info & Diagnostics ---
-    "getEGW", "getEIP", "getLNG", "getMAC1", "getMAC2", "getSRN", "getVER",
+    "getEGW",
+    "getEIP",
+    "getLNG",
+    "getMAC1",
+    "getMAC2",
+    "getSRN",
+    "getTMZ",
+    "getVER",
     # --- Wi-Fi ---
-    "getAPT", "getWFC", "getWFR", "getWFS", "getWGW", "getWIP",
+    "getAPT",
+    "getWFC",
+    "getWFR",
+    "getWFS",
+    "getWGW",
+    "getWIP",
 }
 
-SELECT_KNOWN_KEYS = {
-    "getPRF", "getSRO", "getFFM",
+SELECT_SUPPORTED_KEYS = {
+    "getPRF",
+    "getSRO",
+    "getFFM",
 }
 
-SWITCH_KNOWN_KEYS = {
+SWITCH_SUPPORTED_KEYS = {
     "getBUZ",
 }
 
-BINARY_SENSOR_KNOWN_KEYS = {
+BINARY_SENSOR_SUPPORTED_KEYS = {
+    "get71",
+    "getBSA",
     "getBUZ",
+    "getIDS",
+    "getSFV",
+    "getVTO",
 }
 
 # setDEX (microleakage test) gated on getDSV presence, matching muco_leakprotect.
-BUTTON_KNOWN_KEYS = {
-    "setALA", "setNOT", "setWRN", "setDEX",
+BUTTON_SUPPORTED_KEYS = {
+    "setALA",
+    "setNOT",
+    "setWRN",
+    "setDEX",
 }
 
 # getAB (valve shutoff control) kept - this model genuinely controls a valve.
-VALVE_KNOWN_KEYS = {
+VALVE_SUPPORTED_KEYS = {
     "getAB",
 }
+
+
+PROFILE = SyrConnectDeviceProfile(
+    binary_sensor=BINARY_SENSOR_SUPPORTED_KEYS,
+    button=BUTTON_SUPPORTED_KEYS,
+    select=SELECT_SUPPORTED_KEYS,
+    sensor=SENSOR_SUPPORTED_KEYS,
+    switch=SWITCH_SUPPORTED_KEYS,
+    valve=VALVE_SUPPORTED_KEYS,
+    whu_units=WHU_UNITS_MUCO,
+)

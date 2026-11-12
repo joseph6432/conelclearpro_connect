@@ -44,8 +44,8 @@
       },
       "pathMappings": [
         {
-          "localRoot": "${workspaceFolder}/custom_components/syr_connect",
-          "remoteRoot": "/config/custom_components/syr_connect"
+          "localRoot": "${workspaceFolder}/custom_components/conelclearpro_connect",
+          "remoteRoot": "/config/custom_components/conelclearpro_connect"
         }
       ]
     },
@@ -62,8 +62,8 @@
       },
       "pathMappings": [
         {
-          "localRoot": "${workspaceFolder}/custom_components/syr_connect",
-          "remoteRoot": "/config/custom_components/syr_connect"
+          "localRoot": "${workspaceFolder}/custom_components/conelclearpro_connect",
+          "remoteRoot": "/config/custom_components/conelclearpro_connect"
         }
       ]
     }

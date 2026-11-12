@@ -1,0 +1,23 @@
+---
+description: Per-model device files, model detection and sensor allowlists
+applyTo: "custom_components/conelclearpro_connect/{devices/*.py,models.py,helpers.py}"
+---
+
+# Device files and model detection
+
+- Global allowlists are `_conelclearpro_connect_<PLATFORM>_SUPPORTED_KEYS` in the platform modules (`sensor.py`, `select.py`, …). They are built from the entity descriptions (`_conelclearpro_connect_<PLATFORM>_TYPES`); the select allowlist is a separate set, because some selects are only enabled by a device file. A model may override them per platform in a device file `devices/<name>.py` with `SENSOR_SUPPORTED_KEYS`, `SELECT_SUPPORTED_KEYS`, `SWITCH_SUPPORTED_KEYS`, `BINARY_SENSOR_SUPPORTED_KEYS`, `BUTTON_SUPPORTED_KEYS` and `VALVE_SUPPORTED_KEYS`. An override replaces the global set completely.
+- Every device file collects its allowlists in `PROFILE = SyrConnectDeviceProfile(...)` (`devices/__init__.py`), with `ala_codes=ALA_CODES` when the family has its own alarm codes. The signatures in `models.py` reference it as `device_profile=<name>.PROFILE`; without a profile a model uses the global allowlists and the generic alarm codes.
+- Use positive allowlists only. Do not add exclusion lists to `MODEL_SIGNATURES`.
+- An override must still contain structurally required keys such as `dst`, otherwise `registry_cleanup()` deletes them.
+- An empty override (`set()`) is valid and means "no entities". Always check `is None` when reading an override.
+- A key in a device file needs an entity description of its platform (`_conelclearpro_connect_<PLATFORM>_TYPES`). Except for selects and the sensors in `_conelclearpro_connect_SENSOR_PROFILE_ONLY_KEYS` it is then also in the global allowlist. Selects can be enabled by a device file alone (SafeFloor thresholds, LEX water hardness), and so can computed sensors of one family (`getCND_class`, SafeTech water hardness range).
+- The official per-model validity matrix in `docs/syrconnect-protocol.md` beats fixture contents. A key that is present in a fixture can still be a stub value. Only judge by fixture for properties the matrix does not cover.
+- Fixture co-presence of a key across models does not prove it is generic. When domain knowledge and fixture data conflict, ask the maintainer.
+- Match the exact `dk`/`dkv` in `models.py` before mapping a name from the matrix to a device file. Similar names can be different products.
+- Device file names use underscores (valid module names) and describe the role, for example `muco_filling`. Do not use the raw `getDFM` number, its meaning differs per `dk`/`dkv` family.
+- `detect_model()` first selects the signatures with the cloud `dk`/`dkv` (and `sbt`, if the signature sets it). One signature is the result; in a larger family the status checks decide between its signatures only. The status checks over all signatures are the fallback for the local JSON API and unknown device kinds. Keep `dk`/`dkv` of every signature correct, and give each signature of a family a status check that tells it apart. Do not add generic catch-all signatures for a family, an unknown role must stay an unknown model. The MultiController roles (`getDFM`) come from the dkv table in `docs/syrconnect-protocol.md`.
+- `dfm` is the MultiController role (`getDFM`), the subtype of dk 1500-1506. Like `sbt`, it narrows the signatures before the family and the status checks; a signature without `dfm` matches every device.
+- Rebrand siblings share one device file (for example all NeoSoft rebrands). A change affects the whole family, grep `device_profile=<name>.PROFILE` in `models.py` first.
+- Device modules are imported statically in `models.py`. Add new files there, do not use `importlib` at runtime. `tests/test_helpers.py` checks that every device file is referenced by a signature.
+- When renaming a device file, search the whole repository for the old name. Docstrings and test names reference it as plain strings.
+- Alarm codes that differ from `_conelclearpro_connect_SENSOR_ALA_CODES_GENERIC` (`const.py`) are defined as `ALA_CODES` in the device file and passed to its `PROFILE`. `safetplus.ALA_CODES` uses a different numbering than the generic NeoSoft codes.

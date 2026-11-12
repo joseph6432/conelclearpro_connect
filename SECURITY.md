@@ -2,20 +2,36 @@
 
 ## Supported Versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+Only the latest release receives security fixes. Update to the newest version before reporting a problem.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+| Version | Supported |
+| ------ | ------ |
+| Latest release | Yes |
+| Older releases | No |
 
 ## Reporting a Vulnerability
 
-Use this section to tell people how to report a vulnerability.
+Do not open a public issue for a security problem. Report it privately through GitHub instead:
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+1. Open the [Security tab](https://github.com/alexhass/conelclearpro_connect/security) of this repository.
+2. Select **Report a vulnerability**.
+3. Describe the problem, the affected version and the steps to reproduce it.
+
+Leave passwords, session tokens and serial numbers out of the report. Mask them in logs and diagnostics before attaching them.
+
+The report is only visible to the maintainer. It is answered as soon as possible. A confirmed problem is fixed in a new release, and the advisory is published afterwards.
+
+## Scope
+
+In scope are problems in the code of this integration, for example:
+
+- Handling of the SYR Connect credentials and session tokens
+- Data that diagnostics or logs reveal unintentionally
+- Requests to the cloud or the local device API that can be abused
+
+Out of scope are problems in the SYR Connect cloud, the SYR app or the device firmware. Report them to SYR directly. Problems in Home Assistant itself belong to the [Home Assistant security policy](https://www.home-assistant.io/security/).
+
+
+This is a modified fork of SYR Connect by Alexander Hass
+(https://github.com/alexhass/syr_connect).
+Modifications: renamed to conelclearpro_connect, changed branding/icons.

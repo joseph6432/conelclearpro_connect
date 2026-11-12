@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # To get started with Dependabot version updates, you'll need to specify which
 # package ecosystems to update and where the package manifests are located.
 # Please see the documentation for all configuration options:
@@ -10,3 +11,25 @@ updates:
     schedule:
       interval: "weekly"
 
+=======
+# Dependabot opens a pull request when a newer version of a dependency exists.
+# Options: https://docs.github.com/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+#
+# Updated are the GitHub Actions in .github/workflows/ and the pinned rev of the
+# hook repositories in .pre-commit-config.yaml (local hooks are skipped). Actions
+# pinned to a branch (hacs/action@main, hassfest@master) always run the latest
+# version anyway. Python packages are left out on purpose: requirements-dev.txt
+# uses version ranges, and the requirements in manifest.json follow Home Assistant
+# core.
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+>>>>>>> upstream/main

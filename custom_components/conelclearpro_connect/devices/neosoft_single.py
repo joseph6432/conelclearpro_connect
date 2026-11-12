@@ -1,9 +1,10 @@
-"""Entity allowlist override for the neosoft_single model family (single-tank
-NeoSoft platform, dk=1200-1222 - shared by "neosoft"/"neosoft2500" and every
-single-tank rebrand-only sibling signature in this dk range via
-"device_file": "neosoft_single"). Dual-tank rebrands ("*duo"/"twin"/NeoSoft
-5000) use the sibling neosoft_duo.py instead - see that file for the
-second-tank keys (getRE2/getSS2/getSV2/getVPS2) this file deliberately omits.
+"""Entity allowlist override for the neosoft_single model family.
+
+Single-tank NeoSoft platform (dk=1200-1222), shared by "neosoft2500" and
+every single-tank rebrand-only sibling signature in this dk range via
+device_profile=neosoft_single.PROFILE. Dual-tank rebrands ("*duo"/"twin"/NeoSoft 5000)
+use the sibling neosoft_duo.py instead - see that file for the second-tank keys
+(getRE2/getSS2/getSV2/getVPS2) this file deliberately omits.
 
 Derived from BOTH tests/fixtures/json/SyrNeoSoft2500_get_all.json (JSON API) and
 tests/fixtures/xml/SyrNeoSoft2500_GetDeviceCollectionStatus.xml (XML API) - the
@@ -22,8 +23,8 @@ valve (no getAB/getVLV) and NO battery (no getBAT/getBAP).
 
 Unlike models where getSV1 is a manually-configured salt refill amount, this
 platform has a built-in salt level sensor - getSV1 is read-only telemetry
-here, so it stays sensor-only (SENSOR_KNOWN_KEYS) and is deliberately left
-out of SELECT_KNOWN_KEYS to avoid exposing a control nobody should use.
+here, so it stays sensor-only (SENSOR_SUPPORTED_KEYS) and is deliberately left
+out of SELECT_SUPPORTED_KEYS to avoid exposing a control nobody should use.
 
 Deliberately NOT included:
 - getALD: 600 in JSON but empty ("") in XML - inconsistent, and 600 is the
@@ -35,57 +36,113 @@ Deliberately NOT included:
   JSON fixture entirely. The official "Per-model validity" matrix confirms
   X (not available) for NeoSoft 2500 specifically (✓ for NeoSoft 5000 -
   see neosoft_duo.py, which correctly includes them).
+- getCNL: empty ("") in the XML fixture and absent from the JSON fixture.
+  The conductivity limit needs a conductivity sensor, which NeoSoft 2500
+  does not have (see getCND).
 
 If real-device testing shows any of the above (or other) keys are actually
-used, move them into SENSOR_KNOWN_KEYS below.
+used, move them into SENSOR_SUPPORTED_KEYS below.
 """
 
-SENSOR_KNOWN_KEYS = {
+from . import WHU_UNITS_NEOSOFT, SyrConnectDeviceProfile
+
+SENSOR_SUPPORTED_KEYS = {
     # --- Connectivity ---
     "dst",
     # --- Flow ---
-    "getAVO", "getFLO",
+    "getAVO",
+    "getFLO",
     # --- Alarm / Notification / Warning ---
-    "getALA", "getALM", "getALN", "getALW", "getNOT", "getWRN",
+    "getALA",
+    "getALM",
+    "getALN",
+    "getALW",
+    "getNOT",
+    "getWRN",
     # --- Water Quality ---
-    "getIWH", "getOWH", "getWHU",
+    "getIWH",
+    "getOWH",
+    "getWHU",
     # --- Water Consumption & Volume ---
-    "getLTV", "getVOL",
+    "getLTV",
+    "getVOL",
     # --- Salt / Reserve Capacity ---
-    "getRE1", "getSS1", "getSV1",
+    "getRE1",
+    "getSS1",
+    "getSV1",
     # --- Regeneration ---
-    "getCYN", "getCYT", "getLAR", "getRG1", "getRMO", "getRPD", "getRPW", "getRTI",
+    "getCYN",
+    "getCYT",
+    "getLAR",
+    "getRG1",
+    "getRMO",
+    "getRPD",
+    "getRPW",
+    "getRTI",
     "getRTM",
     # --- Maintenance ---
-    "getSRH", "getSRV",
+    "getSRH",
+    "getSRV",
     # --- Turbine / Pulse Monitoring ---
     "getVPS1",
     # --- Device Info & Diagnostics ---
-    "getMAC1", "getMAC2", "getSRN", "getTYP", "getVER",
+    "getMAC1",
+    "getMAC2",
+    "getSRN",
+    "getTMZ",
+    "getTYP",
+    "getVER",
     # --- Wi-Fi ---
-    "getAPT", "getEGW", "getEIP", "getWFC", "getWFL", "getWFR", "getWFS", "getWGW",
+    "getAPT",
+    "getEGW",
+    "getEIP",
+    "getWFC",
+    "getWFR",
+    "getWFS",
+    "getWGW",
     "getWIP",
 }
 
 # getSV1 excluded - built-in salt level sensor, not a manual setting (see module docstring).
-SELECT_KNOWN_KEYS = {
-    "getRPD", "getRMO", "getRTM",
+SELECT_SUPPORTED_KEYS = {
+    "getRPD",
+    "getRMO",
+    "getRTM",
 }
 
 # getDFI (Conel Clear Pro Fill filling mode) deliberately excluded - no filling
 # feature on this model.
-SWITCH_KNOWN_KEYS = {
+SWITCH_SUPPORTED_KEYS = {
     "getBUZ",
 }
 
-BINARY_SENSOR_KNOWN_KEYS = {
+BINARY_SENSOR_SUPPORTED_KEYS = {
     "getBUZ",
+    "getIDS",
+    "getSFV",
 }
 
 # setDEX excluded - no microleakage-test hardware on this model.
-BUTTON_KNOWN_KEYS = {
-    "setSIR", "setALA", "setNOT", "setWRN",
+BUTTON_SUPPORTED_KEYS = {
+    "setSIR",
+    "setALA",
+    "setNOT",
+    "setWRN",
 }
 
 # No shutoff valve on this model (a conventional softener).
-VALVE_KNOWN_KEYS: set[str] = set()
+VALVE_SUPPORTED_KEYS: set[str] = set()
+
+
+PROFILE = SyrConnectDeviceProfile(
+    binary_sensor=BINARY_SENSOR_SUPPORTED_KEYS,
+    button=BUTTON_SUPPORTED_KEYS,
+    hardness_divisors={
+        1: 10,
+    },
+    select=SELECT_SUPPORTED_KEYS,
+    sensor=SENSOR_SUPPORTED_KEYS,
+    switch=SWITCH_SUPPORTED_KEYS,
+    valve=VALVE_SUPPORTED_KEYS,
+    whu_units=WHU_UNITS_NEOSOFT,
+)

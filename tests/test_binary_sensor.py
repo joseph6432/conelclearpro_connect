@@ -1,22 +1,32 @@
 """Tests for binary_sensor platform."""
-from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.syr_connect.binary_sensor import (
+from custom_components.conelclearpro_connect.binary_sensor import (
     SyrConnectBinarySensor,
     async_setup_entry,
 )
-from custom_components.syr_connect.coordinator import SyrConnectDataUpdateCoordinator
-from custom_components.syr_connect.helpers import _DEVICE_MODULES
+from custom_components.conelclearpro_connect.const import CONF_SERVICE, DOMAIN
+from custom_components.conelclearpro_connect.coordinator import SyrConnectDataUpdateCoordinator
+from custom_components.conelclearpro_connect.models import MODEL_SIGNATURES
+from custom_components.conelclearpro_connect.response_parser import ResponseParser
+from homeassistant.components.binary_sensor import BinarySensorEntityDescription
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 
-def _build_coordinator(hass: HomeAssistant, data: dict) -> SyrConnectDataUpdateCoordinator:
+def _build_coordinator(
+    hass: HomeAssistant, data: dict
+) -> SyrConnectDataUpdateCoordinator:
     config_data = {
+        CONF_SERVICE: "de.consoft.syr.connect",
         CONF_USERNAME: "test@example.com",
         CONF_PASSWORD: "password",
     }
@@ -26,7 +36,7 @@ def _build_coordinator(hass: HomeAssistant, data: dict) -> SyrConnectDataUpdateC
         config_data,
         60,
     )
-    coordinator.async_set_updated_data(data)
+    coordinator.async_set_updated_data(cast(Any, data))
     coordinator.last_update_success = True
     return coordinator
 
@@ -46,10 +56,7 @@ async def test_binary_sensor_is_on_numeric(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "getBUZ", BinarySensorDeviceClass.POWER
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is True
 
@@ -69,10 +76,7 @@ async def test_binary_sensor_is_off_numeric(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "getBUZ", BinarySensorDeviceClass.POWER
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is False
 
@@ -93,15 +97,17 @@ async def test_binary_sensor_available(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "getBUZ", BinarySensorDeviceClass.POWER
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.available is True
 
 
-async def test_async_setup_entry(hass: HomeAssistant, create_mock_entry_with_coordinator) -> None:
+async def test_async_setup_entry(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+) -> None:
     """Test async_setup_entry creates binary sensors."""
     data = {
         "devices": [
@@ -115,14 +121,14 @@ async def test_async_setup_entry(hass: HomeAssistant, create_mock_entry_with_coo
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
 
     entities = []
     async_add_entities = Mock(side_effect=lambda ents: entities.extend(ents))
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
-    # getBUZ is in _SYR_CONNECT_SENSOR_BINARY and is not excluded — one binary sensor total.
+    # getBUZ has a binary sensor description and is not excluded — one binary sensor total.
     assert len(entities) == 1
 
 
@@ -135,10 +141,24 @@ async def test_async_setup_entry(hass: HomeAssistant, create_mock_entry_with_coo
     ids=["safefloor", "lexplus10sl"],
 )
 async def test_async_setup_entry_skips_models_without_buzzer(
-    hass: HomeAssistant, create_mock_entry_with_coordinator, mock_add_entities, status: dict
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    status: dict,
 ) -> None:
     """Models whose device file declares no buzzer get no getBUZ binary sensor, even if the key is present."""
-    data = {"devices": [{"id": "device1", "name": "Test Device", "project_id": "project1", "status": status}]}
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
     mock_config_entry, _ = create_mock_entry_with_coordinator(data)
     entities, async_add_entities = mock_add_entities()
 
@@ -147,17 +167,171 @@ async def test_async_setup_entry_skips_models_without_buzzer(
     assert entities == []
 
 
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        (
+            "SyrSafeTechV4",
+            {
+                "get71",
+                "getBSA",
+                "getBUZ",
+                "getCSD",
+                "getIDS",
+                "getPSD",
+                "getSFV",
+                "getTSD",
+                "getVTO",
+            },
+        ),
+        # getTSD/getPSD/getCSD are reported empty and are not created
+        ("SyrSafeTechPlus", {"get71", "getBSA", "getBUZ", "getSFV", "getVTO"}),
+        ("SyrTrioDFRLS", {"get71", "getBSA", "getBUZ", "getSFV", "getVTO"}),
+        # The MultiController captures report no getVTO via XML
+        ("SyrTrioLock", {"get71", "getBSA", "getBUZ", "getSFV"}),
+        ("ConelClearProLeakProtection", {"get71", "getBSA", "getBUZ", "getSFV"}),
+        ("SyrLEXplus10SL", {"get71", "getBSA"}),
+        ("SyrSafeTPlus", {"get71", "getBUZ"}),
+        ("SyrSafeFloor", {"getSFV"}),
+        # Filling controller: firmware check, but no leak protection or valve test
+        ("ConelClearProFill", {"getBUZ", "getIDS", "getSFV"}),
+        # Daylight saving time disabled is shown as well
+        ("SyrNeoSoft2500", {"getBUZ", "getIDS"}),
+    ],
+)
+async def test_async_setup_entry_real_fixtures(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+    mock_add_entities: Callable[[], tuple[list[Any], Mock]],
+    model: str,
+    expected: set[str],
+) -> None:
+    """Leak protection, firmware check and valve test follow the model allowlists."""
+    xml = (
+        Path(__file__).parent / f"fixtures/xml/{model}_GetDeviceCollectionStatus.xml"
+    ).read_text(encoding="utf-8")
+    status = ResponseParser().parse_device_status_response(xml)
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Test Device",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
+    mock_config_entry, _ = create_mock_entry_with_coordinator(data)
+    entities, async_add_entities = mock_add_entities()
+
+    await async_setup_entry(hass, mock_config_entry, async_add_entities)
+
+    assert {e.entity_description.key for e in entities} == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        # dk 140 (SafeTech V4): integer API, 0 = active, 1 = deactivated
+        ({"getVER": "Safe-Tech V4.08", "getTSD": "0"}, True),
+        ({"getVER": "Safe-Tech V4.08", "getTSD": "1"}, False),
+        # dk 1112 (SafeTech+): boolean API, True = active, False = deactivated
+        ({"getSRN": "112AAA12345", "getTSD": "True"}, True),
+        ({"getSRN": "112AAA12345", "getTSD": False}, False),
+        # Empty value: unknown
+        ({"getVER": "Safe-Tech V4.08", "getTSD": ""}, None),
+    ],
+)
+async def test_binary_sensor_sensor_active_depends_on_dk(
+    hass: HomeAssistant, status: dict, expected: bool | None
+) -> None:
+    """The meaning of the sensor settings flipped with the boolean API (dk >= 1100)."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "project_id": "project1",
+                "status": status,
+            }
+        ]
+    }
+    coordinator = _build_coordinator(hass, data)
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getTSD")
+
+    assert sensor.is_on is expected
+
+
+@pytest.mark.parametrize("key", ["getBSA", "getIDS"])
+async def test_binary_sensor_settings_disabled_by_default(
+    hass: HomeAssistant, key: str
+) -> None:
+    """Rarely changed settings are disabled by default."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "project_id": "project1",
+                "status": {key: "1"},
+            }
+        ]
+    }
+    coordinator = _build_coordinator(hass, data)
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", key)
+
+    assert sensor.entity_registry_enabled_default is False
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", True),  # SafeTech, integer API
+        ("0", False),
+        ("True", True),  # SafeTech+, Trio DFR/LS, boolean API
+        (True, True),  # JSON
+        (False, False),
+    ],
+)
+async def test_binary_sensor_floor_sensor_monitoring(
+    hass: HomeAssistant, value: Any, expected: bool
+) -> None:
+    """Floor sensor monitoring (getBSA) is on when it is enabled, in both APIs."""
+    data = {
+        "devices": [
+            {
+                "id": "device1",
+                "name": "Device 1",
+                "project_id": "project1",
+                "status": {"getBSA": value},
+            }
+        ]
+    }
+    coordinator = _build_coordinator(hass, data)
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBSA")
+
+    assert sensor.is_on is expected
+
+
 def test_device_files_pair_buzzer_switch_with_binary_sensor() -> None:
     """Every device file that exposes getBUZ as a switch also lists it for the binary sensor, and vice versa."""
-    for name, module in _DEVICE_MODULES.items():
-        switch_keys = getattr(module, "SWITCH_KNOWN_KEYS", None)
-        binary_keys = getattr(module, "BINARY_SENSOR_KNOWN_KEYS", None)
-        if switch_keys is None:
+    for signature in MODEL_SIGNATURES:
+        profile = signature.device_profile
+        if profile is None:
             continue
-        assert ("getBUZ" in switch_keys) == ("getBUZ" in (binary_keys or set())), name
+        assert ("getBUZ" in profile.switch) == ("getBUZ" in profile.binary_sensor), (
+            signature.name
+        )
 
 
-async def test_async_setup_entry_multiple_devices(hass: HomeAssistant, create_mock_entry_with_coordinator) -> None:
+async def test_async_setup_entry_multiple_devices(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+) -> None:
     """Test async_setup_entry with multiple devices."""
     data = {
         "devices": [
@@ -177,13 +351,16 @@ async def test_async_setup_entry_multiple_devices(hass: HomeAssistant, create_mo
             },
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
 
     entities = []
     async_add_entities = Mock(side_effect=lambda ents: entities.extend(ents))
 
     # Patch the binary sensors list to include our test sensor
-    with patch("custom_components.syr_connect.binary_sensor._SYR_CONNECT_SENSOR_BINARY", {"testSensor": None}):
+    with patch(
+        "custom_components.conelclearpro_connect.binary_sensor._conelclearpro_connect_BINARY_SENSOR_TYPES",
+        (BinarySensorEntityDescription(key="testSensor"),),
+    ):
         await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
     # Should create one sensor for device1
@@ -199,16 +376,13 @@ async def test_binary_sensor_string_value(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "status": {
-                    "test": "false",
+                    "getBUZ": "false",
                 },
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is False
 
@@ -222,16 +396,13 @@ async def test_binary_sensor_numeric_float(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "status": {
-                    "test": 1.5,
+                    "getBUZ": 1.5,
                 },
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is True
 
@@ -244,17 +415,14 @@ async def test_binary_sensor_unavailable_coordinator(hass: HomeAssistant) -> Non
                 "id": "device1",
                 "name": "Device 1",
                 "project_id": "project1",
-                "status": {"test": "1"},
+                "status": {"getBUZ": "1"},
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
     coordinator.last_update_success = False
 
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.available is False
 
@@ -268,16 +436,13 @@ async def test_binary_sensor_device_unavailable(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "available": False,
-                "status": {"test": "1"},
+                "status": {"getBUZ": "1"},
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
 
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.available is False
 
@@ -296,13 +461,10 @@ async def test_binary_sensor_missing_device(hass: HomeAssistant) -> None:
     }
     coordinator = _build_coordinator(hass, data)
 
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is None
-    assert sensor.available is True  # Returns True when device not found
+    assert sensor.available is False  # Device removed from the account
 
 
 async def test_binary_sensor_string_true(hass: HomeAssistant) -> None:
@@ -314,16 +476,13 @@ async def test_binary_sensor_string_true(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "status": {
-                    "test": "true",
+                    "getBUZ": "true",
                 },
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is True
 
@@ -337,16 +496,13 @@ async def test_binary_sensor_string_false(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "status": {
-                    "test": "False",
+                    "getBUZ": "False",
                 },
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is False
 
@@ -360,16 +516,13 @@ async def test_binary_sensor_string_empty(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "status": {
-                    "test": "",
+                    "getBUZ": "",
                 },
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is False
 
@@ -383,16 +536,13 @@ async def test_binary_sensor_int_zero(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "status": {
-                    "test": 0,
+                    "getBUZ": 0,
                 },
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is False
 
@@ -406,16 +556,13 @@ async def test_binary_sensor_int_nonzero(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "status": {
-                    "test": 5,
+                    "getBUZ": 5,
                 },
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is True
 
@@ -429,16 +576,13 @@ async def test_binary_sensor_float_zero(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "status": {
-                    "test": 0.0,
+                    "getBUZ": 0.0,
                 },
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is False
 
@@ -452,23 +596,25 @@ async def test_binary_sensor_none_value(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "status": {
-                    "test": None,
+                    "getBUZ": None,
                 },
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is False
 
 
-async def test_async_setup_entry_no_data(hass: HomeAssistant, create_mock_entry_with_coordinator) -> None:
+async def test_async_setup_entry_no_data(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+) -> None:
     """Test async_setup_entry with no coordinator data."""
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(None)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(None)
 
     entities = []
     async_add_entities = Mock(side_effect=lambda ents: entities.extend(ents))
@@ -479,43 +625,53 @@ async def test_async_setup_entry_no_data(hass: HomeAssistant, create_mock_entry_
     async_add_entities.assert_not_called()
 
 
-async def test_async_setup_entry_registry_cleanup(hass: HomeAssistant, create_mock_entry_with_coordinator) -> None:
-    """Test async_setup_entry cleans up excluded sensors from registry."""
-    from homeassistant.helpers import entity_registry as er
-
-    # Create registry entry for an excluded sensor
-    registry = er.async_get(hass)
-    entry_to_remove = registry.async_get_or_create(
-        "binary_sensor",
-        "syr_connect",
-        "device1_getBUZ",  # getBUZ is a known binary sensor key — should NOT be cleaned up
-        suggested_object_id="device1_getbuz",
-    )
-
+async def test_async_setup_entry_registry_cleanup(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+) -> None:
+    """Test async_setup_entry removes binary sensors that are not in the allowlist."""
     data = {
         "devices": [
             {
                 "id": "device1",
                 "name": "Test Device",
                 "project_id": "project1",
-                "status": {},
+                "status": {"getBUZ": "1"},
             }
         ]
     }
     mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry.add_to_hass(hass)
+    mock_coordinator.entry_id = mock_config_entry.entry_id
+
+    # getFOO is no binary sensor key; getBUZ is
+    registry = er.async_get(hass)
+    for key in ("getFOO", "getBUZ"):
+        registry.async_get_or_create(
+            "binary_sensor",
+            DOMAIN,
+            f"{mock_config_entry.entry_id}_device1_{key}",
+            config_entry=mock_config_entry,
+        )
 
     entities = []
     async_add_entities = Mock(side_effect=lambda ents: entities.extend(ents))
 
     await async_setup_entry(hass, mock_config_entry, async_add_entities)
 
-    # Entry was created, so verify it existed
-    # Since `binary_sensor.py` may not remove legacy registry entries, ensure
-    # the entry at least existed prior to setup (regression-safe check).
-    assert entry_to_remove is not None
+    prefix = f"{mock_config_entry.entry_id}_device1_"
+    assert not registry.async_get_entity_id("binary_sensor", DOMAIN, prefix + "getFOO")
+    assert registry.async_get_entity_id("binary_sensor", DOMAIN, prefix + "getBUZ")
 
 
-async def test_async_setup_entry_registry_exception(hass: HomeAssistant, create_mock_entry_with_coordinator) -> None:
+async def test_async_setup_entry_registry_exception(
+    hass: HomeAssistant,
+    create_mock_entry_with_coordinator: Callable[
+        ..., tuple[MockConfigEntry, MagicMock]
+    ],
+) -> None:
     """Test async_setup_entry handles registry exceptions gracefully."""
     data = {
         "devices": [
@@ -527,21 +683,21 @@ async def test_async_setup_entry_registry_exception(hass: HomeAssistant, create_
             }
         ]
     }
-    mock_config_entry, mock_coordinator = create_mock_entry_with_coordinator(data)
+    mock_config_entry, _mock_coordinator = create_mock_entry_with_coordinator(data)
 
     entities = []
     async_add_entities = Mock(side_effect=lambda ents: entities.extend(ents))
 
     # Mock registry to raise exception
-    def raise_registry_error(*args, **kwargs):
-        raise Exception("Registry error")
+    def raise_registry_error(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("Registry error")
 
-    with patch("homeassistant.helpers.entity_registry.async_get", side_effect=raise_registry_error):
+    with patch(
+        "homeassistant.helpers.entity_registry.async_get",
+        side_effect=raise_registry_error,
+    ):
         # Should not raise exception, continues setup
         await async_setup_entry(hass, mock_config_entry, async_add_entities)
-
-        # Setup should still complete
-        assert True
 
 
 async def test_binary_sensor_string_nonzero(hass: HomeAssistant) -> None:
@@ -553,16 +709,13 @@ async def test_binary_sensor_string_nonzero(hass: HomeAssistant) -> None:
                 "name": "Device 1",
                 "project_id": "project1",
                 "status": {
-                    "test": "1",
+                    "getBUZ": "1",
                 },
             }
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "test", BinarySensorDeviceClass.RUNNING
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     assert sensor.is_on is True
 
@@ -582,11 +735,8 @@ async def test_binary_sensor_icon_from_icons_json(hass: HomeAssistant) -> None:
         ]
     }
     coordinator = _build_coordinator(hass, data)
-    from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 
-    sensor = SyrConnectBinarySensor(
-        coordinator, "device1", "Device 1", "project1", "getBUZ", BinarySensorDeviceClass.POWER
-    )
+    sensor = SyrConnectBinarySensor(coordinator, "device1", "Device 1", "getBUZ")
 
     # The icon is resolved from icons.json via the translation key
     assert sensor.icon is None

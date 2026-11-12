@@ -1,33 +1,29 @@
 """Binary sensor platform for SYR Connect."""
-from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 import logging
+from typing import Any, Literal, override
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
+    BinarySensorEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import (
-    _SYR_CONNECT_BINARY_SENSOR_KNOWN_KEYS,
-    _SYR_CONNECT_SENSOR_BINARY,
-    _SYR_CONNECT_SENSOR_DIAGNOSTIC,
-    _SYR_CONNECT_SENSOR_EXCLUDED,
-)
-from .coordinator import SyrConnectDataUpdateCoordinator
+from .coordinator import SyrConnectConfigEntry, SyrConnectDataUpdateCoordinator
+from .data import SyrConnectDevice
+from .entity import SyrConnectEntity, async_add_device_entities
 from .helpers import (
-    build_device_info,
-    build_entity_id,
-    build_unique_id,
-    get_model_known_keys,
+    get_device_model,
+    get_model_supported_keys,
+    is_value_true,
     registry_cleanup,
 )
-from .models import detect_model
+from .models import SyrConnectModel
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,9 +31,114 @@ _LOGGER = logging.getLogger(__name__)
 PARALLEL_UPDATES = 1
 
 
+# Devices from this device kind (dk) on report flags as True/False instead of 0/1. With the
+# change, the sensor settings (getTSD/getPSD/getCSD) flipped their meaning, see
+# docs/syrconnect-protocol.md.
+_conelclearpro_connect_BINARY_SENSOR_BOOLEAN_API_MIN_DK = 1100
+
+
+def _is_empty(value: Any) -> bool:
+    """Return True for a missing value (None or blank text)."""
+    return value is None or str(value).strip() == ""
+
+
+def _sensor_active(model: SyrConnectModel, value: Any) -> bool | None:
+    """Return whether a measuring sensor is active (getTSD/getPSD/getCSD).
+
+    Formats:
+    - dk < 1100: "0" -> active, "1" -> deactivated
+    - dk >= 1100: "True" -> active, "False" -> deactivated
+
+    Args:
+        model: Detected model of the device, for its device kind (dk)
+        value: Raw value of the setting
+
+    Returns:
+        True if the sensor is active, False if deactivated, None for an empty value
+    """
+    if _is_empty(value):
+        return None
+    dk = model.dk
+    if dk is not None and dk >= _conelclearpro_connect_BINARY_SENSOR_BOOLEAN_API_MIN_DK:
+        return is_value_true(value)
+    return not is_value_true(value)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SyrConnectBinarySensorEntityDescription(BinarySensorEntityDescription):
+    """Describes a SYR Connect binary sensor; `key` is the status key (e.g. "getBUZ")."""
+
+    # Hide the binary sensor while its value is empty (None or blank text)
+    hidden_when: Literal["empty"] | None = None
+    # Compute the state for keys whose meaning differs from a plain 0/1 flag
+    is_on_fn: Callable[[SyrConnectModel, Any], bool | None] | None = None
+
+
+# Descriptions of all binary sensors
+_conelclearpro_connect_BINARY_SENSOR_TYPES: tuple[
+    SyrConnectBinarySensorEntityDescription, ...
+] = (
+    SyrConnectBinarySensorEntityDescription(
+        key="get71",  # Leak protection deactivated (on = deactivated)
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SyrConnectBinarySensorEntityDescription(
+        key="getBSA",  # Floor sensor monitoring enabled
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+    ),
+    SyrConnectBinarySensorEntityDescription(
+        key="getBUZ",  # Buzzer on/off
+        device_class=BinarySensorDeviceClass.POWER,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SyrConnectBinarySensorEntityDescription(
+        key="getCSD",  # Conductivity sensor active (on = active)
+        entity_category=EntityCategory.DIAGNOSTIC,
+        hidden_when="empty",
+        is_on_fn=_sensor_active,
+    ),
+    SyrConnectBinarySensorEntityDescription(
+        key="getIDS",  # Daylight saving time enabled
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        hidden_when="empty",
+    ),
+    SyrConnectBinarySensorEntityDescription(
+        key="getPSD",  # Pressure sensor active (on = active)
+        entity_category=EntityCategory.DIAGNOSTIC,
+        hidden_when="empty",
+        is_on_fn=_sensor_active,
+    ),
+    SyrConnectBinarySensorEntityDescription(
+        key="getSFV",  # New firmware available (checked at startup and every 6 h)
+        device_class=BinarySensorDeviceClass.UPDATE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    SyrConnectBinarySensorEntityDescription(
+        key="getTSD",  # Temperature sensor active (on = active)
+        entity_category=EntityCategory.DIAGNOSTIC,
+        hidden_when="empty",
+        is_on_fn=_sensor_active,
+    ),
+    SyrConnectBinarySensorEntityDescription(
+        key="getVTO",  # Valve test running
+        device_class=BinarySensorDeviceClass.RUNNING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+)
+
+_conelclearpro_connect_BINARY_SENSOR_DESCRIPTIONS: dict[
+    str, SyrConnectBinarySensorEntityDescription
+] = {description.key: description for description in _conelclearpro_connect_BINARY_SENSOR_TYPES}
+
+# Supported keys for the binary_sensor platform — used by registry_cleanup to remove stale entries.
+_conelclearpro_connect_BINARY_SENSOR_SUPPORTED_KEYS = set(_conelclearpro_connect_BINARY_SENSOR_DESCRIPTIONS)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: SyrConnectConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up SYR Connect binary sensors.
@@ -48,58 +149,76 @@ async def async_setup_entry(
         async_add_entities: Callback to add entities
     """
     _LOGGER.debug("Setting up SYR Connect binary sensors")
-    coordinator: SyrConnectDataUpdateCoordinator = entry.runtime_data
-
-    entities: list[BinarySensorEntity] = []
+    coordinator = entry.runtime_data
 
     if not coordinator.data:
         _LOGGER.warning("No coordinator data available for binary sensors")
         return
 
     registry_cleanup(
-        hass, coordinator.data, "binary_sensor",
-        allowed_keys=_SYR_CONNECT_BINARY_SENSOR_KNOWN_KEYS - _SYR_CONNECT_SENSOR_EXCLUDED,
+        hass,
+        coordinator.data,
+        "binary_sensor",
+        allowed_keys=_conelclearpro_connect_BINARY_SENSOR_SUPPORTED_KEYS,
         entry_id=coordinator.entry_id,
     )
 
-    for device in coordinator.data.get('devices', []):
-        device_id = device['id']
-        device_name = device['name']
-        project_id = device['project_id']
-        status = device.get('status', {})
-        known_binary_keys = get_model_known_keys(
-            detect_model(status), "binary_sensor", _SYR_CONNECT_BINARY_SENSOR_KNOWN_KEYS
-        )
+    async_add_device_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        lambda device: _build_device_binary_sensors(coordinator, device),
+    )
 
-        # Create binary sensors for boolean status values
-        for sensor_key, device_class in _SYR_CONNECT_SENSOR_BINARY.items():
-            if sensor_key in known_binary_keys and sensor_key in status and sensor_key not in _SYR_CONNECT_SENSOR_EXCLUDED:
-                entities.append(
-                    SyrConnectBinarySensor(
-                        coordinator,
-                        device_id,
-                        device_name,
-                        project_id,
-                        sensor_key,
-                        device_class,
-                    )
+
+def _build_device_binary_sensors(
+    coordinator: SyrConnectDataUpdateCoordinator, device: SyrConnectDevice
+) -> list[BinarySensorEntity]:
+    """Return the binary sensors of one device."""
+    entities: list[BinarySensorEntity] = []
+    device_id = device["id"]
+    device_name = device["name"]
+    status = device.get("status", {})
+    supported_binary_keys = get_model_supported_keys(
+        get_device_model(device),
+        "binary_sensor",
+        _conelclearpro_connect_BINARY_SENSOR_SUPPORTED_KEYS,
+    )
+
+    # Create binary sensors for boolean status values
+    for description in _conelclearpro_connect_BINARY_SENSOR_TYPES:
+        sensor_key = description.key
+        if (
+            sensor_key in supported_binary_keys
+            and sensor_key in status
+            and not (
+                description.hidden_when == "empty" and _is_empty(status[sensor_key])
+            )
+        ):
+            entities.append(
+                SyrConnectBinarySensor(
+                    coordinator,
+                    device_id,
+                    device_name,
+                    sensor_key,
                 )
+            )
 
-    _LOGGER.debug("Adding %d binary sensor(s) total", len(entities))
-    async_add_entities(entities)
+    _LOGGER.debug("Adding %d binary sensor(s) for device %s", len(entities), device_id)
+    return entities
 
 
-class SyrConnectBinarySensor(CoordinatorEntity, BinarySensorEntity):
+class SyrConnectBinarySensor(SyrConnectEntity, BinarySensorEntity):
     """Representation of a SYR Connect binary sensor."""
+
+    entity_description: SyrConnectBinarySensorEntityDescription
 
     def __init__(
         self,
         coordinator: SyrConnectDataUpdateCoordinator,
         device_id: str,
         device_name: str,
-        project_id: str,
         sensor_key: str,
-        device_class: BinarySensorDeviceClass,
     ) -> None:
         """Initialize the binary sensor.
 
@@ -107,68 +226,27 @@ class SyrConnectBinarySensor(CoordinatorEntity, BinarySensorEntity):
             coordinator: Data update coordinator
             device_id: Device ID (serial number)
             device_name: Device display name
-            project_id: Project ID
             sensor_key: Sensor key (e.g., 'getBUZ')
-            device_class: Binary sensor device class
         """
-        super().__init__(coordinator)
+        super().__init__(
+            coordinator, device_id, device_name, "binary_sensor", sensor_key
+        )
 
-        self._device_id = device_id
-        self._device_name = device_name
-        self._project_id = project_id
         self._sensor_key = sensor_key
-
-        # Set unique ID and translation platform
-        self._attr_unique_id = build_unique_id(coordinator.entry_id, device_id, sensor_key)
-        self._attr_has_entity_name = True
-        self._attr_translation_key = sensor_key.lower()
-        self._attr_device_class = device_class
-
-        # Override the entity_id to use technical name (serial number) with domain prefix
-        self.entity_id = build_entity_id("binary_sensor", device_id, sensor_key)
-
-        # Set entity category for diagnostic sensors
-        if sensor_key in _SYR_CONNECT_SENSOR_DIAGNOSTIC:
-            self._attr_entity_category = EntityCategory.DIAGNOSTIC
-
-        # Build device info from coordinator data
-        self._attr_device_info = build_device_info(device_id, device_name, coordinator.data)
+        self.entity_description = _conelclearpro_connect_BINARY_SENSOR_DESCRIPTIONS[sensor_key]
 
     @property
+    @override
     def is_on(self) -> bool | None:
         """Return true if the binary sensor is on.
 
         Returns:
             True if sensor is on, False if off, None if unavailable
         """
-        for device in self.coordinator.data.get('devices', []):
-            if device['id'] == self._device_id:
-                status = device.get('status', {})
-                value = status.get(self._sensor_key)
-
-                # Convert value to boolean
-                if isinstance(value, int | float):
-                    return value != 0
-                elif isinstance(value, str):
-                    return value not in ("0", "false", "False", "")
-
-                return False
-
-        return None
-
-    @property
-    def available(self) -> bool:
-        """Return if entity is available.
-
-        Returns:
-            True if last coordinator update was successful and device is available
-        """
-        if not self.coordinator.last_update_success:
-            return False
-
-        # Check if the specific device is available
-        for device in self.coordinator.data.get('devices', []):
-            if device['id'] == self._device_id:
-                return device.get('available', True)
-
-        return True
+        if self._device is None:
+            return None
+        value = self._status.get(self._sensor_key)
+        if self.entity_description.is_on_fn is not None:
+            return self.entity_description.is_on_fn(self.device_model, value)
+        # An unknown value (missing, empty) is shown as off
+        return is_value_true(value)

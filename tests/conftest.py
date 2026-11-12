@@ -1,7 +1,13 @@
-from collections.abc import Generator
+"""Fixtures for the SYR Connect tests."""
+
+from collections.abc import Callable, Generator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.conelclearpro_connect.coordinator import SyrConnectDataUpdateCoordinator
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 
@@ -9,7 +15,7 @@ pytest_plugins = "pytest_homeassistant_custom_component"
 
 
 @pytest.fixture
-def setup_in_progress_config_entry():
+def setup_in_progress_config_entry() -> Any:
     """Mock ConfigEntry in state SETUP_IN_PROGRESS."""
     entry = MagicMock()
     entry.state = config_entries.ConfigEntryState.SETUP_IN_PROGRESS
@@ -17,7 +23,7 @@ def setup_in_progress_config_entry():
 
 
 @pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(enable_custom_integrations):
+def auto_enable_custom_integrations(enable_custom_integrations: None) -> Any:
     """Enable custom integrations for all tests."""
     return enable_custom_integrations
 
@@ -31,15 +37,19 @@ def expected_lingering_timers() -> bool:
 @pytest.fixture
 def mock_setup_entry() -> Generator[AsyncMock]:
     """Override async_setup_entry."""
-    with patch("custom_components.syr_connect.async_setup_entry", new_callable=AsyncMock) as mock_setup_entry:
+    with patch(
+        "custom_components.conelclearpro_connect.async_setup_entry", new_callable=AsyncMock
+    ) as mock_setup_entry:
         mock_setup_entry.return_value = True
         yield mock_setup_entry
 
 
 @pytest.fixture
-def mock_syr_api():
+def mock_syr_api() -> Generator[Any]:
     """Mock SyrConnectXmlAPI."""
-    with patch("custom_components.syr_connect.api_xml.SyrConnectXmlAPI") as mock_api:
+    with patch(
+        "custom_components.conelclearpro_connect.config_flow.SyrConnectXmlAPI"
+    ) as mock_api:
         api_instance = MagicMock()
         api_instance.login = AsyncMock(return_value=True)
         api_instance.session_data = "test_session_id"
@@ -47,14 +57,12 @@ def mock_syr_api():
         api_instance.get_devices = AsyncMock(return_value=[])
         api_instance.get_device_status = AsyncMock(return_value={})
         api_instance.is_session_valid = MagicMock(return_value=True)
-        # Prevent accidental async mock creation
-        api_instance._is_coroutine = False
         mock_api.return_value = api_instance
         yield api_instance
 
 
 @pytest.fixture
-def mock_config_entry():
+def mock_config_entry() -> Any:
     """Mock ConfigEntry."""
     return {
         CONF_USERNAME: "test@example.com",
@@ -63,9 +71,8 @@ def mock_config_entry():
 
 
 @pytest.fixture
-def create_mock_coordinator():
+def create_mock_coordinator() -> Any:
     """Create a mock coordinator with given data."""
-    from custom_components.syr_connect.coordinator import SyrConnectDataUpdateCoordinator
 
     def _create(data: dict | None = None) -> MagicMock:
         mock_coordinator = MagicMock(spec=SyrConnectDataUpdateCoordinator)
@@ -80,9 +87,10 @@ def create_mock_coordinator():
 
 
 @pytest.fixture
-def create_mock_entry_with_coordinator(create_mock_coordinator):
+def create_mock_entry_with_coordinator(
+    create_mock_coordinator: Callable[..., MagicMock],
+) -> Any:
     """Create a mock config entry with coordinator."""
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
 
     def _create(data: dict | None = None) -> tuple[MockConfigEntry, MagicMock]:
         mock_config_entry = MockConfigEntry()
@@ -94,7 +102,7 @@ def create_mock_entry_with_coordinator(create_mock_coordinator):
 
 
 @pytest.fixture
-def mock_add_entities():
+def mock_add_entities() -> Any:
     """Create a mock add_entities function that captures entities."""
 
     def _create() -> tuple[list, Mock]:

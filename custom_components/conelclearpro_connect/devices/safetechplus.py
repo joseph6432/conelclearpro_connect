@@ -1,59 +1,203 @@
 """Entity allowlists for SafeTech+ (dkv=39 and dkv=112).
 
 Based on the SafeTech+ JSON and XML fixtures and checked against the
-Per-model validity matrix. The matrix marks BAR unavailable for SafeTech+,
-so getBAR is intentionally absent here even though it appears in the captures.
+Per-model validity matrix. The official matrix swaps BAR and BAR2 for SafeTech+:
+the devices report getBAR and leave getBAR2 empty, so getBAR is used here (see
+issue 9 in docs/known_issues_json_api.md).
 The base SafeTech family keeps its separate devices/safetech.py allowlist.
+The self-learning phase is included: the official API documentation lists it
+for SafeTech+, although the captures report no self-learning results.
 """
 
-SENSOR_KNOWN_KEYS = {
+from . import SyrConnectDeviceProfile
+
+SENSOR_SUPPORTED_KEYS = {
     # --- Connectivity ---
     "dst",
     # --- Valve, flow, and volume ---
-    "getAB", "getAVO", "getFLO", "getLTV", "getVLV", "getVOL",
+    "getAB",
+    "getAVO",
+    "getFLO",
+    "getLTV",
+    "getVLV",
+    "getVOL",
     # --- Alarm, notification, and warning ---
-    "getALA", "getALD", "getALM", "getNOT", "getWRN",
+    "getALA",
+    "getALD",
+    "getALM",
+    "getNOT",
+    "getWRN",
     # --- Pressure, voltage, and battery ---
-    "getBAP", "getBAR2", "getBAT", "getNET",
+    "getBAP",
+    "getBAR",
+    "getBAT",
+    "getNET",
     # --- Water quality ---
-    "getCEL", "getCND",
+    "getCEL",
+    "getCND",
+    "getCND_class",
+    "getCNF",
+    "getCNL",
     # --- Microleakage test ---
-    "getDBD", "getDMA", "getDRP", "getDSV", "getDTT", "getNPS",
+    "getDBD",
+    "getDBT",
+    "getDCM",
+    "getDMA",
+    "getDOM",
+    "getDPL",
+    "getDRP",
+    "getDST",
+    "getDSV",
+    "getDTC",
+    "getDTT",
+    "getNPS",
+    # --- Leak protection and self-learning ---
+    "getLWT",
+    "getSLE",
+    "getSLF",
+    "getSLO",
+    "getSLP",
+    "getSLT",
+    "getSLV",
+    "getSMF",
+    "getSOF",
     # --- Leak-protection profiles ---
-    "getPA1", "getPA2", "getPA3", "getPA4", "getPA5", "getPA6", "getPA7", "getPA8",
-    "getPB1", "getPB2", "getPB3", "getPB4", "getPB5", "getPB6", "getPB7", "getPB8",
-    "getPF1", "getPF2", "getPF3", "getPF4", "getPF5", "getPF6", "getPF7", "getPF8",
-    "getPM1", "getPM2", "getPM3", "getPM4", "getPM5", "getPM6", "getPM7", "getPM8",
-    "getPN1", "getPN2", "getPN3", "getPN4", "getPN5", "getPN6", "getPN7", "getPN8",
-    "getPR1", "getPR2", "getPR3", "getPR4", "getPR5", "getPR6", "getPR7", "getPR8",
+    "getPA1",
+    "getPA2",
+    "getPA3",
+    "getPA4",
+    "getPA5",
+    "getPA6",
+    "getPA7",
+    "getPA8",
+    "getPB1",
+    "getPB2",
+    "getPB3",
+    "getPB4",
+    "getPB5",
+    "getPB6",
+    "getPB7",
+    "getPB8",
+    "getPF1",
+    "getPF2",
+    "getPF3",
+    "getPF4",
+    "getPF5",
+    "getPF6",
+    "getPF7",
+    "getPF8",
+    "getPM1",
+    "getPM2",
+    "getPM3",
+    "getPM4",
+    "getPM5",
+    "getPM6",
+    "getPM7",
+    "getPM8",
+    "getPN1",
+    "getPN2",
+    "getPN3",
+    "getPN4",
+    "getPN5",
+    "getPN6",
+    "getPN7",
+    "getPN8",
+    "getPR1",
+    "getPR2",
+    "getPR3",
+    "getPR4",
+    "getPR5",
+    "getPR6",
+    "getPR7",
+    "getPR8",
     "getPRF",
-    "getPT1", "getPT2", "getPT3", "getPT4", "getPT5", "getPT6", "getPT7", "getPT8",
-    "getPV1", "getPV2", "getPV3", "getPV4", "getPV5", "getPV6", "getPV7", "getPV8",
-    "getPW1", "getPW2", "getPW3", "getPW4", "getPW5", "getPW6", "getPW7", "getPW8",
+    "getPRN",
+    "getPT1",
+    "getPT2",
+    "getPT3",
+    "getPT4",
+    "getPT5",
+    "getPT6",
+    "getPT7",
+    "getPT8",
+    "getPV1",
+    "getPV2",
+    "getPV3",
+    "getPV4",
+    "getPV5",
+    "getPV6",
+    "getPV7",
+    "getPV8",
+    "getPW1",
+    "getPW2",
+    "getPW3",
+    "getPW4",
+    "getPW5",
+    "getPW6",
+    "getPW7",
+    "getPW8",
     # --- Device information and diagnostics ---
-    "getAPT", "getCNO", "getEGW", "getEIP", "getFFM", "getLNG",
-    "getMAC", "getMAC1", "getMAC2", "getSRN", "getSRO", "getSRV", "getT2",
-    "getTMP", "getTYP", "getVER",
+    "getAPT",
+    "getEGW",
+    "getEIP",
+    "getFFM",
+    "getLNG",
+    "getMAC",
+    "getMAC1",
+    "getMAC2",
+    "getSRN",
+    "getSRO",
+    "getSRV",
+    "getT2",
+    "getTMP",
+    "getTYP",
+    "getVER",
     # --- Wi-Fi ---
-    "getWFC", "getWFL", "getWFR", "getWFS", "getWGW", "getWIP",
+    "getWFC",
+    "getWFR",
+    "getWFS",
+    "getWGW",
+    "getWIP",
 }
 
-SELECT_KNOWN_KEYS = {
-    "getFFM", "getPRF", "getSRO",
+SELECT_SUPPORTED_KEYS = {
+    "getFFM",
+    "getPRF",
+    "getSRO",
 }
 
-SWITCH_KNOWN_KEYS = {
+SWITCH_SUPPORTED_KEYS = {
     "getBUZ",
 }
 
-BINARY_SENSOR_KNOWN_KEYS = {
+BINARY_SENSOR_SUPPORTED_KEYS = {
+    "get71",
+    "getBSA",
     "getBUZ",
+    "getCSD",
+    "getPSD",
+    "getSFV",
+    "getTSD",
+    "getVTO",
 }
 
-BUTTON_KNOWN_KEYS = {
-    "setALA", "setDEX", "setNOT", "setWRN",
+BUTTON_SUPPORTED_KEYS = {
+    "setALA",
+    "setDEX",
+    "setNOT",
+    "setWRN",
 }
 
-VALVE_KNOWN_KEYS = {
+VALVE_SUPPORTED_KEYS = {
     "getAB",
 }
+
+
+PROFILE = SyrConnectDeviceProfile(
+    binary_sensor=BINARY_SENSOR_SUPPORTED_KEYS,
+    button=BUTTON_SUPPORTED_KEYS,
+    select=SELECT_SUPPORTED_KEYS,
+    sensor=SENSOR_SUPPORTED_KEYS,
+    switch=SWITCH_SUPPORTED_KEYS,
+    valve=VALVE_SUPPORTED_KEYS,
+)

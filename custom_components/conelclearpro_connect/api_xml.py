@@ -10,51 +10,51 @@ Cloud API workflow:
 4. Get statistics (water/salt consumption) -> returns historical data
 
 Security features:
-- Request checksums using dual-key HMAC (prevents tampering)
+- Request checksums with a proprietary two-key algorithm (required by the webservice; not an HMAC)
 - Response encryption using AES (protects sensitive data)
-- Session-based authentication with 30-minute timeout
+- Session-based authentication; a token rejected by the webservice triggers one new login (no client-side expiry)
 
 The API client coordinates several helper components:
 - SyrEncryption: AES encryption/decryption
-- SyrChecksum: Dual-key HMAC checksums
+- SyrChecksum: Request checksums
 - PayloadBuilder: XML request construction
 - ResponseParser: XML response parsing
 - HTTPClient: HTTP POST with custom headers
 """
-from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
+from datetime import datetime
 import logging
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiohttp
 
 from .checksum import SyrChecksum
 from .const import (
-    _SYR_CONNECT_API_XML_BASE_URL,
-    _SYR_CONNECT_API_XML_DEVICE_GET_LIST_URL,
-    _SYR_CONNECT_API_XML_DEVICE_GET_STATISTICS_URL,
-    _SYR_CONNECT_API_XML_DEVICE_GET_STATUS_URL,
-    _SYR_CONNECT_API_XML_DEVICE_SET_STATUS_URL,
-    _SYR_CONNECT_API_XML_LOGIN_URL,
-    _SYR_CONNECT_CLIENT_APP_NAME,
-    _SYR_CONNECT_CLIENT_CF_BUNDLE_IDENTIFIER,
-    _SYR_CONNECT_CLIENT_CF_BUNDLE_VERSION,
-    _SYR_CONNECT_CLIENT_CHECKSUM_KEY1,
-    _SYR_CONNECT_CLIENT_CHECKSUM_KEY2,
-    _SYR_CONNECT_CLIENT_ENCRYPTION_IV,
-    _SYR_CONNECT_CLIENT_ENCRYPTION_KEY,
-    _SYR_CONNECT_CLIENT_OS_LANGUAGE,
-    _SYR_CONNECT_CLIENT_OS_MODEL,
-    _SYR_CONNECT_CLIENT_OS_NAME,
-    _SYR_CONNECT_CLIENT_OS_VERSION,
-    _SYR_CONNECT_CLIENT_USER_AGENT,
-    _SYR_CONNECT_SESSION_TIMEOUT_MINUTES,
+    _conelclearpro_connect_API_XML_DEVICE_GET_LIST_URL,
+    _conelclearpro_connect_API_XML_DEVICE_GET_STATUS_URL,
+    _conelclearpro_connect_API_XML_DEVICE_SERVICE_PATH,
+    _conelclearpro_connect_API_XML_DEVICE_SET_STATUS_URL,
+    _conelclearpro_connect_API_XML_LOGIN_URL,
+    _conelclearpro_connect_CLIENT_CF_BUNDLE_VERSION,
+    _conelclearpro_connect_CLIENT_CHECKSUM_KEY1,
+    _conelclearpro_connect_CLIENT_CHECKSUM_KEY2,
+    _conelclearpro_connect_CLIENT_OS_LANGUAGE,
+    _conelclearpro_connect_CLIENT_OS_MODEL,
+    _conelclearpro_connect_CLIENT_OS_NAME,
+    _conelclearpro_connect_CLIENT_OS_VERSION,
+    _conelclearpro_connect_CLIENT_USER_AGENT,
+    SyrConnectService,
 )
+from .data import SyrConnectDevice
+from .devices import SyrConnectStatistic
 from .encryption import SyrEncryption
 from .exceptions import (
     SyrConnectAuthError,
     SyrConnectConnectionError,
+    SyrConnectLoginFailedError,
+    SyrConnectSessionExpiredError,
 )
 from .helpers import mask_ug_value
 from .http_client import HTTPClient
@@ -79,9 +79,8 @@ class SyrConnectXmlAPI:
         username: str,
         password: str,
         *,
-        api_app_name: str | None = None,
-        api_base_url: str | None = None,
-        cf_bundle_identifier: str | None = None,
+        service: SyrConnectService,
+        language: str = _conelclearpro_connect_CLIENT_OS_LANGUAGE,
     ) -> None:
         """Initialize the cloud API client.
 
@@ -89,12 +88,11 @@ class SyrConnectXmlAPI:
             session: aiohttp ClientSession provided by Home Assistant
             username: SYR Connect cloud account email address
             password: SYR Connect cloud account password
-            api_app_name: Application name sent in the login payload "<nfo v=...>" (from _SYR_CONNECT_API_SERVICES).
-                Defaults to _SYR_CONNECT_CLIENT_APP_NAME ("SYR Connect").
-            api_base_url: Cloud API base URL override (from _SYR_CONNECT_API_SERVICES), must end with "/".
-                Defaults to _SYR_CONNECT_API_XML_BASE_URL ("https://syrconnect.de/").
-            cf_bundle_identifier: iOS bundle identifier override (from _SYR_CONNECT_API_SERVICES).
-                Defaults to _SYR_CONNECT_CLIENT_CF_BUNDLE_IDENTIFIER ("de.consoft.syr.connect").
+            service: Cloud API service of the account (from _conelclearpro_connect_API_SERVICES):
+                app name, base URL, bundle identifier and the key of the login response
+            language: Locale like "de-DE" (from helpers.get_api_locale) sent in the app version string
+                "<si v=...>", as lng/reg at login, lg/rg in statistics requests and in the
+                Accept-Language header. Defaults to _conelclearpro_connect_CLIENT_OS_LANGUAGE ("en-US").
         """
         # --- Authentication credentials ---
         self.username = username
@@ -103,31 +101,33 @@ class SyrConnectXmlAPI:
         # --- Session management ---
         # Session data is a token string returned by login, used for all subsequent requests
         self.session_data: str = ""
-        # Sessions expire after 30 minutes of inactivity
-        self.session_expires_at: datetime | None = None
+        # Serializes (re-)logins from parallel requests (see _ensure_session/_relogin)
+        self._login_lock = asyncio.Lock()
 
         # --- Project structure ---
         # Cloud API organizes devices into projects (locations/buildings)
         # Each login returns a list of projects the user has access to
         self.projects: list[dict[str, Any]] = []
 
-        # --- URL overrides (config entry-specific) ---
-        _app_name = api_app_name or _SYR_CONNECT_CLIENT_APP_NAME
-        _base = api_base_url or _SYR_CONNECT_API_XML_BASE_URL
-        _bundle_id = cf_bundle_identifier or _SYR_CONNECT_CLIENT_CF_BUNDLE_IDENTIFIER
-        self._login_url = _base + _SYR_CONNECT_API_XML_LOGIN_URL
-        self._device_list_url = _base + _SYR_CONNECT_API_XML_DEVICE_GET_LIST_URL
-        self._device_get_status_url = _base + _SYR_CONNECT_API_XML_DEVICE_GET_STATUS_URL
-        self._device_set_status_url = _base + _SYR_CONNECT_API_XML_DEVICE_SET_STATUS_URL
-        self._device_get_statistics_url = _base + _SYR_CONNECT_API_XML_DEVICE_GET_STATISTICS_URL
+        # --- Service endpoints (config entry-specific) ---
+        _app_name = service.api_app_name
+        _base = service.api_base_url
+        _bundle_id = service.cf_bundle_identifier
+        self._login_url = _base + _conelclearpro_connect_API_XML_LOGIN_URL
+        self._device_list_url = _base + _conelclearpro_connect_API_XML_DEVICE_GET_LIST_URL
+        self._device_get_status_url = _base + _conelclearpro_connect_API_XML_DEVICE_GET_STATUS_URL
+        self._device_set_status_url = _base + _conelclearpro_connect_API_XML_DEVICE_SET_STATUS_URL
+        # The statistics method of the device family is appended (get_statistics)
+        self._device_service_url = _base + _conelclearpro_connect_API_XML_DEVICE_SERVICE_PATH
 
-        # Example: "App-3.7.10-de-DE-iOS-iPhone-15.8.3-de.consoft.syr.connect"
+        # Example: "App-3.9.7-de-DE-iOS-iPhone-27.0.0-de.consoft.syr.connect"
+        # The app sends the phone's language here; use the HA locale.
         _app_version = (
-            f"App-{_SYR_CONNECT_CLIENT_CF_BUNDLE_VERSION}"
-            f"-{_SYR_CONNECT_CLIENT_OS_LANGUAGE}"
-            f"-{_SYR_CONNECT_CLIENT_OS_NAME}"
-            f"-{_SYR_CONNECT_CLIENT_OS_MODEL}"
-            f"-{_SYR_CONNECT_CLIENT_OS_VERSION}"
+            f"App-{_conelclearpro_connect_CLIENT_CF_BUNDLE_VERSION}"
+            f"-{language}"
+            f"-{_conelclearpro_connect_CLIENT_OS_NAME}"
+            f"-{_conelclearpro_connect_CLIENT_OS_MODEL}"
+            f"-{_conelclearpro_connect_CLIENT_OS_VERSION}"
             f"-{_bundle_id}"
         )
 
@@ -135,61 +135,100 @@ class SyrConnectXmlAPI:
         # These handle the low-level details of the SYR protocol
 
         # AES encryption for login response decryption
-        self.encryption = SyrEncryption(_SYR_CONNECT_CLIENT_ENCRYPTION_KEY, _SYR_CONNECT_CLIENT_ENCRYPTION_IV)
+        self.encryption = SyrEncryption(service.crypt_key, service.crypt_vector)
 
-        # Dual-key HMAC checksums to prevent request tampering
-        self.checksum = SyrChecksum(_SYR_CONNECT_CLIENT_CHECKSUM_KEY1, _SYR_CONNECT_CLIENT_CHECKSUM_KEY2)
+        # Request checksum required by the webservice (proprietary, two keys; not an HMAC)
+        self.checksum = SyrChecksum(
+            _conelclearpro_connect_CLIENT_CHECKSUM_KEY1, _conelclearpro_connect_CLIENT_CHECKSUM_KEY2
+        )
 
         # XML payload construction with embedded checksums
-        self.payload_builder = PayloadBuilder(_app_version, self.checksum, _app_name)
+        self.payload_builder = PayloadBuilder(
+            _app_version, self.checksum, _app_name, language
+        )
 
         # XML response parsing (handles various response formats)
         self.response_parser = ResponseParser()
 
         # HTTP client with SYR-specific User-Agent
-        self.http_client = HTTPClient(session, _SYR_CONNECT_CLIENT_USER_AGENT)
+        self.http_client = HTTPClient(
+            session, _conelclearpro_connect_CLIENT_USER_AGENT, language=language
+        )
+
+    @property
+    def device_get_status_url(self) -> str:
+        """Return the URL of the device status request."""
+        return self._device_get_status_url
+
+    @property
+    def device_list_url(self) -> str:
+        """Return the URL of the device list request."""
+        return self._device_list_url
 
     def is_session_valid(self) -> bool:
-        """Check if the current session is still valid.
+        """Return True if a session token from a previous login is available.
 
-        Sessions are valid if:
-        1. We have a session token (self.session_data is not empty)
-        2. We have an expiry time set (self.session_expires_at is not None)
-        3. The current time is before the expiry time (not timed out)
-
-        Returns:
-            True if session is valid and can be used for API calls, False otherwise
+        There is no client-side expiry: the real session lifetime of the webservice is
+        unknown. A rejected token is detected in the response instead (see
+        _post_with_session), which then triggers a new login.
         """
-        # Check if we have a session token at all
-        if not self.session_data:
-            return False
-
-        # Check if we have an expiry time (should always be set with session_data)
-        if self.session_expires_at is None:
-            return False
-
-        # Check if session hasn't timed out yet
-        return datetime.now(UTC) < self.session_expires_at
+        return bool(self.session_data)
 
     async def _ensure_session(self) -> None:
-        """Ensure a valid session exists before making an API request.
-
-        If the current session is not valid, attempt to re-authenticate by
-        calling ``login()``. This centralises the repeated guard used across
-        the XML API methods.
-        """
-        if not self.is_session_valid():
-            _LOGGER.warning("Session expired, re-authenticating...")
+        """Log in if there is no session token yet (first request)."""
+        if self.is_session_valid():
+            return
+        # Requests run in parallel (projects, devices): only the first one logs in
+        async with self._login_lock:
+            if self.is_session_valid():
+                return
             await self.login()
 
-    def _update_session_expiry(self) -> None:
-        """Update session expiration time.
+    async def _relogin(self, rejected_token: str) -> None:
+        """Log in again after the webservice rejected `rejected_token`.
 
-        Called after successful login to set the session timeout.
-        Sessions expire after 30 minutes of inactivity, matching the
-        server-side timeout to avoid unnecessary re-authentication attempts.
+        Parallel requests usually get the rejection at the same time; only the first one
+        logs in, the others find a new token already and reuse it.
         """
-        self.session_expires_at = datetime.now(UTC) + timedelta(minutes=_SYR_CONNECT_SESSION_TIMEOUT_MINUTES)
+        async with self._login_lock:
+            if self.session_data and self.session_data != rejected_token:
+                return
+            await self.login()
+
+    async def _post_with_session(
+        self, url: str, build_payload: Callable[[str], str], name: str
+    ) -> str:
+        """Post a request built with the current session token; re-login once if it is rejected.
+
+        The webservice answers a rejected (invalid or expired) token with HTTP 200 and
+        `<sc><msg mtid="1" .../></sc>` (docs/known_issues_xml_api.md, issue 4). The request is
+        then sent once more with a new token; a second rejection is raised as
+        SyrConnectSessionExpiredError, a SyrConnectConnectionError.
+
+        Args:
+            url: Endpoint URL
+            build_payload: Builds the XML payload for a given session token
+            name: Request name for log messages
+
+        Returns:
+            The raw XML response
+        """
+        token = self.session_data
+        payload = build_payload(token)
+        _LOGGER.debug("%s payload: %s", name, mask_ug_value(payload))
+        xml_response = await self.http_client.post(url, {"xml": payload})
+        try:
+            self.response_parser.raise_if_session_expired(xml_response)
+        except SyrConnectSessionExpiredError as err:
+            _LOGGER.info("%s: %s; logging in again", name, err)
+            await self._relogin(token)
+            payload = build_payload(self.session_data)
+            _LOGGER.debug(
+                "%s payload (after re-login): %s", name, mask_ug_value(payload)
+            )
+            xml_response = await self.http_client.post(url, {"xml": payload})
+            self.response_parser.raise_if_session_expired(xml_response)
+        return xml_response
 
     async def login(self) -> bool:
         """Authenticate with the SYR Connect cloud service.
@@ -216,57 +255,77 @@ class SyrConnectXmlAPI:
 
         # --- Build Login Request ---
         # Payload includes username, password, and checksum for integrity
-        xml_data = self.payload_builder.build_login_payload(self.username, self.password)
-        _LOGGER.debug("Login payload prepared")
+        xml_data = self.payload_builder.build_login_payload(
+            self.username, self.password
+        )
+        _LOGGER.debug("Login payload prepared (%d bytes)", len(xml_data))
 
         try:
             # --- Make HTTP Request ---
             # Login uses direct XML POST (not form-encoded like other endpoints)
             xml_response = await self.http_client.post(
-                self._login_url,
-                xml_data,
-                content_type='text/xml'
+                self._login_url, xml_data, content_type="text/xml"
             )
             _LOGGER.debug("Login XML response received")
 
             # --- Parse and Decrypt Response ---
             # Response contains encrypted session data to protect credentials in transit
-            encrypted_text, _ = self.response_parser.parse_login_response(xml_response)
+            encrypted_text, parsed = self.response_parser.parse_login_response(
+                xml_response
+            )
             decrypted = self.encryption.decrypt(encrypted_text)
             _LOGGER.info("Login response decrypted successfully")
 
+            # Success is reported by <suc v="true"/> only, as in the SYR app
+            if not self.response_parser.is_login_successful(parsed):
+                self.response_parser.raise_login_rejected(decrypted)
+
             # --- Extract Session and Projects ---
             # Decrypted data contains session token and list of accessible projects
-            self.session_data, self.projects = self.response_parser.parse_decrypted_login(decrypted)
+            self.session_data, self.projects = (
+                self.response_parser.parse_decrypted_login(decrypted)
+            )
 
-            # --- Update Session Tracking ---
-            # Set expiry time to 30 minutes from now
-            self._update_session_expiry()
             _LOGGER.info("Login successful, found %d project(s)", len(self.projects))
 
             # Log available projects for debugging
             for project in self.projects:
-                _LOGGER.debug("Project: %s (ID: %s)", project['name'], project['id'])
-
-            return True
+                _LOGGER.debug("Project: %s (ID: %s)", project["name"], project["id"])
 
         # --- Error Handling ---
-        except ValueError as err:
-            # Parser errors usually mean invalid credentials or malformed response
+        except SyrConnectAuthError as err:
+            # The server rejected the password (see raise_login_rejected): re-authentication needed
             _LOGGER.error("Authentication failed: %s", err)
-            raise SyrConnectAuthError(f"Authentication failed: {err}") from err
+            raise
+        except SyrConnectLoginFailedError as err:
+            # Unknown username or cloud failure (see raise_login_rejected): no re-authentication
+            _LOGGER.error("Login failed: %s", err)
+            raise
+        except ValueError as err:
+            # Malformed or unexpected answer (e.g. a maintenance page instead of XML). The
+            # credentials are not known to be wrong, so this must not trigger a re-authentication.
+            _LOGGER.error("Invalid login response: %s", err)
+            raise SyrConnectConnectionError(f"Invalid login response: {err}") from err
         except (aiohttp.ClientError, TimeoutError) as err:
             # Network errors (DNS, connection timeout, etc.)
             error_representation = repr(err)
             _LOGGER.error("Connection failed: %s", error_representation)
-            raise SyrConnectConnectionError(f"Connection failed: {error_representation}") from err
+            raise SyrConnectConnectionError(
+                f"Connection failed: {error_representation}"
+            ) from err
         except Exception as err:
             # Catch-all for unexpected errors (encryption failures, etc.)
             error_representation = repr(err)
-            _LOGGER.error("Login failed with unexpected error: %s", error_representation)
-            raise SyrConnectConnectionError(f"Login failed: {error_representation}") from err
+            _LOGGER.error(
+                "Login failed with unexpected error: %s", error_representation
+            )
+            raise SyrConnectConnectionError(
+                f"Login failed: {error_representation}"
+            ) from err
+        else:
+            return True
 
-    async def get_devices(self, project_id: str) -> list[dict[str, Any]]:
+    async def get_devices(self, project_id: str) -> list[SyrConnectDevice]:
         """Fetch all devices in a project.
 
         Each project (building/location) can contain multiple devices.
@@ -295,17 +354,15 @@ class SyrConnectXmlAPI:
 
         _LOGGER.debug("Getting devices for project: %s", project_id)
 
-        # --- Build Request Payload ---
-        # Payload includes session token and project ID
-        payload = self.payload_builder.build_device_get_list_payload(self.session_data, project_id)
-        _LOGGER.debug("Payload prepared: %s", mask_ug_value(payload))
-
         try:
             # --- Make HTTP Request ---
             # Device list endpoint uses form-encoded XML
-            xml_response = await self.http_client.post(
+            xml_response = await self._post_with_session(
                 self._device_list_url,
-                {'xml': payload}
+                lambda token: self.payload_builder.build_device_get_list_payload(
+                    token, project_id
+                ),
+                "Device list",
             )
             _LOGGER.debug("Device list XML response: %s", xml_response)
 
@@ -314,30 +371,24 @@ class SyrConnectXmlAPI:
             devices = self.response_parser.parse_device_list_response(xml_response)
 
             # --- Enrich Device Data ---
-            # Add project context and normalize ID fields
+            # Add project context
             for device in devices:
                 # Associate device with its parent project
-                device['project_id'] = project_id
-
-                # Ensure 'id' field exists (parser may use 'serial_number')
-                # This normalizes the interface for the coordinator
-                if 'id' not in device and 'serial_number' in device:
-                    _LOGGER.debug(
-                        "Device missing 'id' field; falling back to 'serial_number' for id: %s",
-                        device['serial_number'],
-                    )
-                    device['id'] = device['serial_number']
+                device["project_id"] = project_id
 
                 _LOGGER.debug(
                     "Device found: %s (ID: %s, DCLG: %s)",
-                    device['name'], device.get('id'), device.get('dclg')
+                    device["name"],
+                    device.get("id"),
+                    device.get("dclg"),
                 )
 
             _LOGGER.debug("Found %d device(s) in project %s", len(devices), project_id)
-            return devices
 
         except (aiohttp.ClientError, TimeoutError) as err:
             raise SyrConnectConnectionError(f"Failed to get devices: {err}") from err
+        else:
+            return devices
 
     async def get_device_status(self, device_id: str) -> dict[str, Any] | None:
         """Fetch current status and parameters of a device.
@@ -369,16 +420,14 @@ class SyrConnectXmlAPI:
 
         _LOGGER.debug("Getting status for device: %s", device_id)
 
-        # --- Build Request Payload ---
-        # Payload includes session token and device DCLG ID
-        payload = self.payload_builder.build_device_get_status_payload(self.session_data, device_id)
-        _LOGGER.debug("Status request payload: %s", mask_ug_value(payload))
-
         try:
             # --- Make HTTP Request ---
-            xml_response = await self.http_client.post(
+            xml_response = await self._post_with_session(
                 self._device_get_status_url,
-                {'xml': payload}
+                lambda token: self.payload_builder.build_device_get_status_payload(
+                    token, device_id
+                ),
+                "Status request",
             )
             _LOGGER.debug("Status XML response: %s", xml_response)
 
@@ -386,17 +435,27 @@ class SyrConnectXmlAPI:
             # Parser returns None if response doesn't have expected structure
             # This is intentional: allows coordinator to keep previous state
             # rather than failing completely on malformed responses
-            status_data = self.response_parser.parse_device_status_response(xml_response)
+            status_data = self.response_parser.parse_device_status_response(
+                xml_response
+            )
             if status_data is None:
                 _LOGGER.debug("Status parser returned None for device %s", device_id)
                 return None
 
             _LOGGER.debug("Status data parsed: %d attributes", len(status_data))
-            return status_data
 
+        except (aiohttp.ClientError, TimeoutError) as err:
+            # Network errors: wrap them like login()/get_devices() so callers
+            # only need to handle SyrConnectError
+            _LOGGER.error("Failed to get device status: %s", err)
+            raise SyrConnectConnectionError(
+                f"Failed to get device status: {err}"
+            ) from err
         except Exception as err:
             _LOGGER.error("Failed to get device status: %s", err)
             raise
+        else:
+            return status_data
 
     async def set_device_status(
         self,
@@ -432,15 +491,13 @@ class SyrConnectXmlAPI:
             for cmd, val in commands
         ]
 
-        payload = self.payload_builder.build_device_set_status_payload(
-            self.session_data, device_id, normalized
-        )
-        _LOGGER.debug("Set status payload: %s", mask_ug_value(payload))
-
         try:
-            xml_response = await self.http_client.post(
+            xml_response = await self._post_with_session(
                 self._device_set_status_url,
-                {"xml": payload},
+                lambda token: self.payload_builder.build_device_set_status_payload(
+                    token, device_id, normalized
+                ),
+                "Set status",
             )
             _LOGGER.debug("Set status XML response: %s", xml_response)
             _LOGGER.info(
@@ -448,35 +505,34 @@ class SyrConnectXmlAPI:
                 len(commands),
                 device_id,
             )
-            return True
+        except (aiohttp.ClientError, TimeoutError) as err:
+            # Network errors: wrapped so the entity turns them into a
+            # HomeAssistantError for the user instead of an unhandled exception
+            _LOGGER.error("Failed to set device status for %s: %s", device_id, err)
+            raise SyrConnectConnectionError(
+                f"Failed to set device status: {err}"
+            ) from err
         except Exception as err:
             _LOGGER.error("Failed to set device status for %s: %s", device_id, err)
             raise
+        else:
+            return True
 
-    async def get_statistics(self, device_id: str, statistic_type: str = "water") -> dict[str, Any]:
-        """Fetch historical consumption statistics for a device.
+    async def get_statistics(
+        self, device_id: str, statistic: SyrConnectStatistic
+    ) -> list[tuple[datetime, float]]:
+        """Fetch the measurement history of one series of a device.
 
-        This endpoint is primarily used by LEXplus devices that track:
-        - Water consumption (daily/weekly/monthly totals)
-        - Salt consumption (regeneration counts, salt usage)
-
-        Statistics are useful for:
-        - Monitoring usage patterns
-        - Detecting leaks (abnormal consumption)
-        - Planning maintenance (salt refills)
-        - Energy/cost analysis
-
-        Note: Not all device models support statistics. SafeTech and older
-        NeoSoft models may not provide this data.
+        The cloud keeps measurements a device does not report in its status, for
+        example the measurements of a SafeFloor sensor between two uploads. The device
+        profile lists the series of a family (``SyrConnectDeviceProfile.statistics``).
 
         Args:
             device_id: Device collection group ID (DCLG)
-            statistic_type: Type of statistic to fetch:
-                - "water": Water consumption in liters/gallons
-                - "salt": Salt consumption in kg and regeneration counts
+            statistic: Series to fetch (web service method and request attributes)
 
         Returns:
-            Dictionary with time-series data (format varies by statistic_type)
+            (timestamp, value) of every measurement, sorted by timestamp (UTC)
 
         Raises:
             SyrConnectAuthError: If session expired and re-login fails
@@ -485,28 +541,35 @@ class SyrConnectXmlAPI:
         # --- Ensure Valid Session ---
         await self._ensure_session()
 
-        _LOGGER.debug("Getting %s statistics for device: %s", statistic_type, device_id)
-
-        # --- Build Request Payload ---
-        payload = self.payload_builder.build_device_get_statistics_payload(
-            self.session_data, device_id, statistic_type
+        _LOGGER.debug(
+            "Getting %s statistics (%s) for device: %s",
+            statistic.key,
+            statistic.method,
+            device_id,
         )
-        _LOGGER.debug("Statistics payload: %s", mask_ug_value(payload))
 
         try:
             # --- Make HTTP Request ---
-            xml_response = await self.http_client.post(
-                self._device_get_statistics_url,
-                {'xml': payload}
+            xml_response = await self._post_with_session(
+                self._device_service_url + statistic.method,
+                lambda token: self.payload_builder.build_device_get_statistics_payload(
+                    token, device_id, statistic
+                ),
+                "Statistics",
             )
             _LOGGER.debug("Statistics XML response: %s", xml_response)
 
             # --- Parse Response ---
-            # Statistics format depends on device model and statistic type
             stats_data = self.response_parser.parse_statistics_response(xml_response)
-            _LOGGER.debug("Statistics data parsed: %d attributes", len(stats_data))
-            return stats_data
+            _LOGGER.debug("Statistics parsed: %d measurement(s)", len(stats_data))
 
+        except (aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.error("Failed to get %s statistics: %s", statistic.key, err)
+            raise SyrConnectConnectionError(
+                f"Failed to get {statistic.key} statistics: {err}"
+            ) from err
         except Exception as err:
-            _LOGGER.error("Failed to get %s statistics: %s", statistic_type, err)
+            _LOGGER.error("Failed to get %s statistics: %s", statistic.key, err)
             raise
+        else:
+            return stats_data

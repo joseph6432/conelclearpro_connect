@@ -1,6 +1,7 @@
-"""Entity allowlist override for the lex model family (i-LEX / LEX conventional
-softeners, dk=40/dkv=16 - shared by all l10-l100 and lex10-lex100 signatures
-via "device_file": "lex").
+"""Entity allowlist override for the lex model family.
+
+Covers i-LEX / LEX conventional softeners (dk=40/dkv=16), shared by all l10-l100
+and lex10-lex100 signatures via device_profile=lex.PROFILE.
 
 Derived from tests/fixtures/xml/SyrL20_GetDeviceCollectionStatus.xml and
 tests/fixtures/xml/SyrLEX30_GetDeviceCollectionStatus.xml (no JSON fixture exists
@@ -23,61 +24,135 @@ Deliberately NOT included:
 - getWRN: not present in either fixture (no warning-code feature on this
   family; getNOT/getALM are present and used instead).
 - getHED, getHEM, getHEY, getHSD, getHSM, getHSY, getVAC: present in the
-  fixtures but not in the global const.py allowlist at all (undocumented
+  fixtures but not in the global sensor.py allowlist at all (undocumented
   keys).
 
 If real-device testing shows any of the above (or other) keys are actually
-used, move them into SENSOR_KNOWN_KEYS below (after adding them to the
-global const.py allowlist first).
+used, move them into SENSOR_SUPPORTED_KEYS below (after adding them to the
+global sensor.py allowlist first).
 """
 
-SENSOR_KNOWN_KEYS = {
+from . import WHU_UNITS_LEX, SyrConnectDeviceProfile
+
+SENSOR_SUPPORTED_KEYS = {
     # --- Connectivity ---
     "dst",
     # --- Flow ---
     "getFLO",
     # --- Alarm / Notification (alarm_style_alm: getALM/getNOT, no getALA/getWRN) ---
-    "getALM", "getNOT",
+    "getALM",
+    "getNOT",
     # --- Pressure ---
     "getPRS",
     # --- Water Quality ---
-    "getIWH", "getOWH", "getWHU",
+    "getIWH",
+    "getOWH",
+    "getWHU",
     # --- Device Status ---
-    "getDEN",
     # --- Resin Capacity ---
-    "getCS1", "getCS2", "getCS3",
+    "getCS1",
+    "getCS2",
+    "getCS3",
     # --- Salt ---
-    "getRDO", "getRES", "getSS1", "getSS2", "getSS3", "getSV1", "getSV2", "getSV3",
+    "getRDO",
+    "getRES",
+    "getSS1",
+    "getSS2",
+    "getSS3",
+    "getSV1",
+    "getSV2",
+    "getSV3",
     # --- Regeneration ---
-    "getCYN", "getCYT", "getRG1", "getRG2", "getRG3", "getRPD", "getRPW", "getRTH",
-    "getRTI", "getRTM", "getSCR", "getTOR",
+    "getCYN",
+    "getCYT",
+    "getRG1",
+    "getRG2",
+    "getRG3",
+    "getRPD",
+    "getRPW",
+    "getRTI",
+    "getRTM",
+    "getSCR",
+    "getTOR",
     # --- Maintenance ---
-    "getDWF", "getVS1", "getVS2", "getVS3",
+    "getDWF",
     # --- Filter ---
-    "getFCO", "getPST",
+    "getFCO",
+    "getPST",
     # --- Device Info & Diagnostics ---
-    "getCDE", "getCNA", "getDGW", "getFIR", "getIPA", "getMAC", "getMAN", "getSRN",
-    "getTYP", "getVER",
+    "getCNA",
+    "getDGW",
+    "getFIR",
+    "getIPA",
+    "getMAC",
+    "getMAN",
+    "getSRN",
+    "getTYP",
+    "getVER",
     # --- Wi-Fi (optional module on some units, e.g. LEX10) ---
-    "getAPT", "getEGW", "getEIP", "getMAC1", "getMAC2", "getWFC", "getWFR", "getWFS",
-    "getWGW", "getWIP",
+    "getAPT",
+    "getEGW",
+    "getEIP",
+    "getMAC1",
+    "getMAC2",
+    "getWFC",
+    "getWFR",
+    "getWFS",
+    "getWGW",
+    "getWIP",
 }
 
-SELECT_KNOWN_KEYS = {
-    "getIWH", "getOWH", "getRPD", "getRTM", "getSV1", "getSV2", "getSV3",
+SELECT_SUPPORTED_KEYS = {
+    "getIWH",
+    "getOWH",
+    "getRPD",
+    "getRTM",
+    "getSV1",
+    "getSV2",
+    "getSV3",
 }
 
 # No buzzer on this model.
-SWITCH_KNOWN_KEYS: set[str] = set()
+SWITCH_SUPPORTED_KEYS: set[str] = set()
 
 # No buzzer on this model.
-BINARY_SENSOR_KNOWN_KEYS: set[str] = set()
+BINARY_SENSOR_SUPPORTED_KEYS: set[str] = set()
 
 # setWRN excluded - no getWRN in either fixture. setDEX excluded - no
 # microleakage-test hardware on this model.
-BUTTON_KNOWN_KEYS = {
-    "setSIR", "setALA", "setNOT",
+BUTTON_SUPPORTED_KEYS = {
+    "setSIR",
+    "setALA",
+    "setNOT",
 }
 
 # No shutoff valve on this model (a conventional column softener).
-VALVE_KNOWN_KEYS: set[str] = set()
+VALVE_SUPPORTED_KEYS: set[str] = set()
+
+# Alarm codes of i-LEX, LEX Plus 10 and LEX Plus 10 S (raw API getALM -> internal
+# translation key). The LEX Plus 10 SL has its own, longer table (lexplus10sl.ALA_CODES).
+ALA_CODES = {
+    "0": "no_alarm",
+    "LOWSALT": "alarm_salt_supply_low",
+    "NOSALT": "alarm_salt_supply_empty",
+    "1": "alarm_salt_supply_empty",
+    "2": "alarm_pressure_too_low",
+    "3": "alarm_pressure_too_high",
+    "4": "alarm_pressure_sensor_faulty",
+    "5": "alarm_valve_malfunction",
+}
+
+
+PROFILE = SyrConnectDeviceProfile(
+    ala_codes=ALA_CODES,
+    binary_sensor=BINARY_SENSOR_SUPPORTED_KEYS,
+    button=BUTTON_SUPPORTED_KEYS,
+    select=SELECT_SUPPORTED_KEYS,
+    sensor=SENSOR_SUPPORTED_KEYS,
+    sensor_factors={
+        "getFLO": 60,
+    },
+    switch=SWITCH_SUPPORTED_KEYS,
+    valve=VALVE_SUPPORTED_KEYS,
+    whu_units=WHU_UNITS_LEX,
+)

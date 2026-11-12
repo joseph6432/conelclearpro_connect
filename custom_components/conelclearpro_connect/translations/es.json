@@ -1,19 +1,15 @@
 {
   "config": {
     "abort": {
-      "already_configured": "Este hub ya está configurado",
-      "reauth_failed": "Falló la reautenticación. Inténtelo de nuevo.",
-      "reauth_successful": "Reautenticación exitosa",
-      "reconfigure_failed": "Falló la reconfiguración. Inténtelo de nuevo.",
-      "reconfigure_successful": "Reconfiguración exitosa"
+      "already_configured": "Este hub ya está configurado"
     },
     "error": {
-      "cannot_connect": "No se puede conectar al servicio. Verifique su conexión a Internet e inténtelo de nuevo.",
-      "cannot_connect_local": "No se puede conectar al dispositivo local. Verifique que la dirección IP sea correcta y que el dispositivo esté encendido y conectado a su red local.",
-      "host_invalid": "Host no válido. Introduzca una dirección IP o nombre de host válido (sin espacios ni número de puerto).",
-      "host_no_port": "El host no debe incluir un número de puerto. Introduzca solo la dirección IP o el nombre de host.",
-      "invalid_auth": "Nombre de usuario o contraseña inválidos. Verifique sus credenciales.",
-      "unknown": "Se ha producido un error inesperado. Inténtelo de nuevo más tarde."
+      "cannot_connect": "No se puede conectar al servicio. Debe comprobarse la conexión a Internet.",
+      "cannot_connect_local": "No se puede conectar al dispositivo local. La dirección IP debe ser correcta y el dispositivo debe estar encendido y conectado a la red local.",
+      "host_invalid": "Host no válido. Se requiere una dirección IP o un nombre de host válido.",
+      "host_no_port": "El host no debe incluir un número de puerto. Solo se admite la dirección IP o el nombre de host.",
+      "invalid_auth": "Nombre de usuario o contraseña no válidos. Deben comprobarse las credenciales.",
+      "unknown": "Se ha producido un error inesperado. La acción puede repetirse más tarde."
     },
     "step": {
       "api_json": {
@@ -21,7 +17,11 @@
           "host": "Nombre de host o dirección IP",
           "model": "Modelo del dispositivo"
         },
-        "description": "Introduzca el modelo y el nombre de host/IP para acceso local",
+        "data_description": {
+          "host": "Dirección IP o nombre de host del dispositivo en la red local.",
+          "model": "Seleccionar el modelo del dispositivo"
+        },
+        "description": "Modelo y nombre de host o dirección IP del dispositivo",
         "title": "SYR Connect (Local)"
       },
       "api_xml": {
@@ -30,7 +30,12 @@
           "service": "Servicio",
           "username": "Nombre de usuario"
         },
-        "description": "Introduzca las credenciales de su aplicación móvil para acceso en la nube",
+        "data_description": {
+          "password": "La contraseña con la que se inicia sesión en la nube.",
+          "service": "Seleccionar la nube con la que se usan los dispositivos. Cada nube tiene sus propias cuentas.",
+          "username": "El nombre de usuario con el que se inicia sesión en la nube."
+        },
+        "description": "Credenciales de la aplicación móvil para la nube",
         "title": "SYR Connect (Cloud)"
       },
       "reauth_confirm": {
@@ -38,8 +43,24 @@
           "password": "Contraseña",
           "username": "Nombre de usuario"
         },
-        "description": "Las credenciales de {username} ya no son válidas. Introduzca nuevas credenciales.",
+        "data_description": {
+          "password": "La contraseña con la que se inicia sesión en la nube.",
+          "username": "El nombre de usuario con el que se inicia sesión en la nube."
+        },
+        "description": "Las credenciales de {username} ya no son válidas. Se requieren nuevas credenciales.",
         "title": "Reautenticar SYR Connect"
+      },
+      "reauth_confirm_local": {
+        "data": {
+          "host": "Nombre de host o dirección IP",
+          "model": "Modelo del dispositivo"
+        },
+        "data_description": {
+          "host": "Dirección IP o nombre de host del dispositivo en la red local, sin puerto.",
+          "model": "Seleccionar el modelo del dispositivo. De él depende la dirección de su API local."
+        },
+        "description": "El dispositivo en {host} rechazó la conexión. Deben comprobarse el modelo del dispositivo y el nombre de host o la dirección IP.",
+        "title": "Reconectar SYR Connect (Local)"
       },
       "reconfigure": {
         "data": {
@@ -49,14 +70,25 @@
           "service": "Servicio",
           "username": "Nombre de usuario"
         },
-        "description": "Actualice su configuración.",
+        "data_description": {
+          "host": "Dirección IP o nombre de host del dispositivo en la red local, sin puerto.",
+          "model": "Seleccionar el modelo del dispositivo",
+          "password": "La contraseña con la que se inicia sesión en la nube.",
+          "service": "Seleccionar la nube con la que se usan los dispositivos. Cada nube tiene sus propias cuentas.",
+          "username": "La cuenta con la que se inicia sesión en la nube."
+        },
+        "description": "La configuración se puede modificar.",
         "title": "Reconfigurar SYR Connect"
       },
       "user": {
-        "description": "Elija cómo conectarse a su dispositivo SYR:\n\n- **Acceso en la nube**: Use las credenciales de su aplicación móvil para acceder a todos sus dispositivos a través del servicio en la nube de SYR. Requiere conexión a Internet.\n\n- **Acceso local**: Conéctese directamente a un dispositivo en su red local usando su dirección IP. Funciona sin conexión y proporciona tiempos de respuesta más rápidos.",
+        "description": "Tipo de conexión con el dispositivo SYR:",
+        "menu_option_descriptions": {
+          "api_json": "Conexión directa con un dispositivo de la red local mediante su dirección IP. Funciona sin Internet y responde más rápido.",
+          "api_xml": "Acceso a todos los dispositivos de la cuenta a través del servicio en la nube de SYR con las credenciales de la aplicación móvil. Requiere conexión a Internet."
+        },
         "menu_options": {
-          "api_json": "Acceso local",
-          "api_xml": "Acceso en la nube"
+          "api_json": "Local",
+          "api_xml": "Nube"
         },
         "title": "SYR Connect"
       }
@@ -64,12 +96,60 @@
   },
   "entity": {
     "binary_sensor": {
+      "get71": {
+        "name": "Protección contra fugas",
+        "state": {
+          "false": "Activa",
+          "true": "Desactivada"
+        }
+      },
+      "getbsa": {
+        "name": "Supervisión del sensor de suelo",
+        "state": {
+          "false": "Desactivada",
+          "true": "Activa"
+        }
+      },
       "getbuz": {
         "name": "Zumbador en alarma",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
+      },
+      "getcsd": {
+        "name": "Sensor de conductividad",
+        "state": {
+          "false": "Desactivado",
+          "true": "Activo"
+        }
+      },
+      "getids": {
+        "name": "Horario de verano",
+        "state": {
+          "false": "Desactivado",
+          "true": "Activado"
+        }
+      },
+      "getpsd": {
+        "name": "Sensor de presión",
+        "state": {
+          "false": "Desactivado",
+          "true": "Activo"
+        }
+      },
+      "getsfv": {
+        "name": "Comprobación de firmware"
+      },
+      "gettsd": {
+        "name": "Sensor de temperatura",
+        "state": {
+          "false": "Desactivado",
+          "true": "Activo"
+        }
+      },
+      "getvto": {
+        "name": "Prueba de válvula"
       }
     },
     "button": {
@@ -82,14 +162,8 @@
       "setnot": {
         "name": "Restablecer notificación"
       },
-      "setrst": {
-        "name": "Reiniciar dispositivo"
-      },
       "setsir": {
         "name": "Regenerar ahora"
-      },
-      "setsmr": {
-        "name": "Regeneración múltiple"
       },
       "setwrn": {
         "name": "Restablecer advertencia"
@@ -100,7 +174,10 @@
         "name": "Duración de alarma"
       },
       "getcrs": {
-        "name": "Tamaño del cartucho"
+        "name": "Tamaño del cartucho",
+        "state": {
+          "custom": "Personalizado"
+        }
       },
       "getcrt": {
         "name": "Tipo de cartucho",
@@ -110,6 +187,9 @@
           "2": "HVE+",
           "none": "Ninguno"
         }
+      },
+      "getcwl": {
+        "name": "Umbral de advertencia de capacidad restante"
       },
       "getfcd": {
         "name": "Intervalo de retrolavado del filtro",
@@ -128,6 +208,9 @@
           "7776000": "3 meses"
         }
       },
+      "getfcs": {
+        "name": "Tamaño del cartucho (personalizado)"
+      },
       "getffm": {
         "name": "Tipo de filtro",
         "state": {
@@ -136,6 +219,12 @@
           "2": "Filtro intercambiable",
           "3": "Sin filtro"
         }
+      },
+      "getfmt": {
+        "name": "Duración máxima de llenado (llenado inicial)"
+      },
+      "getfvt": {
+        "name": "Volumen máximo de llenado (llenado inicial)"
       },
       "getiwh": {
         "name": "Dureza del agua cruda"
@@ -400,7 +489,7 @@
         "name": "Hora de regeneración"
       },
       "getrvt": {
-        "name": "Carga máxima de llenado"
+        "name": "Volumen máximo de llenado"
       },
       "getsro": {
         "name": "Orientación de la pantalla",
@@ -412,13 +501,13 @@
         }
       },
       "getsv1": {
-        "name": "Cantidad de sal depósito 1"
+        "name": "Cantidad de sal en el depósito 1"
       },
       "getsv2": {
-        "name": "Cantidad de sal depósito 2"
+        "name": "Cantidad de sal en el depósito 2"
       },
       "getsv3": {
-        "name": "Cantidad de sal depósito 3"
+        "name": "Cantidad de sal en el depósito 3"
       },
       "gettpr": {
         "name": "Presión objetivo"
@@ -465,9 +554,10 @@
           "alarm_cartridge_exhausted_capacity": "Cartucho agotado (capacidad)",
           "alarm_cartridge_exhausted_conductivity": "Cartucho agotado (conductividad)",
           "alarm_chlor_generator_fault": "¡Fallo del generador de cloro!",
-          "alarm_end_switch": "Interruptor final",
-          "alarm_external_sensor_leakage_cable": "Fuga sensor externo (cable)",
-          "alarm_external_sensor_leakage_radio": "Fuga sensor externo (radio)",
+          "alarm_conductivity_too_high": "Conductividad demasiado alta",
+          "alarm_end_switch": "Interruptor de fin de carrera",
+          "alarm_external_sensor_leakage_cable": "Fuga en sensor externo (cable)",
+          "alarm_external_sensor_leakage_radio": "Fuga en sensor externo (radio)",
           "alarm_fill_cycles_exceeded": "¡Ciclos de llenado superados!",
           "alarm_flow_sensor_fault": "¡Fallo del sensor de caudal!",
           "alarm_heating_fill_time_leak": "¡Fuga de tiempo de llenado de calefacción!",
@@ -480,6 +570,7 @@
           "alarm_microleakage_detected": "¡Microfuga detectada!",
           "alarm_motor_current_exceeded": "¡Umbral de corriente del motor superado!",
           "alarm_no_network_connection": "Fallo de conexión de red",
+          "alarm_no_power_supply": "Sin alimentación eléctrica",
           "alarm_pressure_sensor_faulty": "¡Sensor de presión defectuoso!",
           "alarm_pressure_too_high": "Presión de entrada demasiado alta",
           "alarm_pressure_too_low": "Presión de entrada demasiado baja",
@@ -489,15 +580,16 @@
           "alarm_safefloor_high_temperature": "Umbral de temperatura alta superado",
           "alarm_safefloor_low_humidity": "Umbral de humedad baja superado",
           "alarm_safefloor_low_temperature": "Umbral de temperatura baja superado",
-          "alarm_safefloor_weather": "Fallo del sensor de temperatura",
+          "alarm_safefloor_weather": "Fallo del sensor de temperatura y humedad",
           "alarm_safet_absence_leakage_detected": "Fuga de ausencia detectada. Volumen superado",
-          "alarm_safet_flow_leakage_detected": "Fuga de flujo detectada: Caudal > 3500 l/h",
-          "alarm_safet_flow_time_exceeded": "Criterio de tiempo de flujo superado.",
+          "alarm_safet_flow_leakage_detected": "Fuga de flujo detectada: caudal > 3500 l/h",
+          "alarm_safet_flow_time_exceeded": "Criterio de tiempo de flujo superado",
           "alarm_safet_leakage_volume_reached": "Fuga de presencia detectada. Volumen superado",
           "alarm_safet_microleakage_detected": "Microfuga detectada. Valor límite superado",
           "alarm_safet_turbine_no_signal": "Sin señal de turbina",
           "alarm_safet_valve_cannot_be_operated": "La válvula no puede ser accionada",
-          "alarm_salt_supply_empty": "Suministro de sal vacío",
+          "alarm_salt_supply_empty": "Reserva de sal vacía",
+          "alarm_salt_supply_low": "Reserva de sal baja",
           "alarm_target_pressure_unreachable": "¡No se puede alcanzar la presión objetivo!",
           "alarm_temperature_sensor_faulty": "¡Sensor de temperatura defectuoso!",
           "alarm_turbine_blocked": "¡Turbina bloqueada!",
@@ -514,9 +606,57 @@
       "getalm": {
         "name": "Últimas alarmas",
         "state": {
-          "low_salt": "Poca sal",
-          "no_alarm": "Sin alarma",
-          "no_salt": "Sin sal"
+          "alarm_battery_low": "Batería agotada",
+          "alarm_battery_weak": "¡Batería débil!",
+          "alarm_brine_level_high": "Nivel del depósito de sal demasiado alto",
+          "alarm_brine_level_low": "Nivel del depósito de sal demasiado bajo",
+          "alarm_cartridge_exhausted_capacity": "Cartucho agotado (capacidad)",
+          "alarm_cartridge_exhausted_conductivity": "Cartucho agotado (conductividad)",
+          "alarm_chlor_generator_fault": "¡Fallo del generador de cloro!",
+          "alarm_conductivity_too_high": "Conductividad demasiado alta",
+          "alarm_end_switch": "Interruptor de fin de carrera",
+          "alarm_external_sensor_leakage_cable": "Fuga en sensor externo (cable)",
+          "alarm_external_sensor_leakage_radio": "Fuga en sensor externo (radio)",
+          "alarm_fill_cycles_exceeded": "¡Ciclos de llenado superados!",
+          "alarm_flow_sensor_fault": "¡Fallo del sensor de caudal!",
+          "alarm_heating_fill_time_leak": "¡Fuga de tiempo de llenado de calefacción!",
+          "alarm_heating_fill_volume_leak": "¡Fuga de volumen de llenado de calefacción!",
+          "alarm_increased_water_hardness": "Aumento de dureza del agua",
+          "alarm_leakage_time_reached": "¡Tiempo de fuga alcanzado!",
+          "alarm_leakage_volume_approaching": "Volumen de fuga próximo al límite",
+          "alarm_leakage_volume_reached": "¡Volumen de fuga alcanzado!",
+          "alarm_max_flow_rate_reached": "¡Caudal máximo alcanzado!",
+          "alarm_microleakage_detected": "¡Microfuga detectada!",
+          "alarm_motor_current_exceeded": "¡Umbral de corriente del motor superado!",
+          "alarm_no_network_connection": "Fallo de conexión de red",
+          "alarm_no_power_supply": "Sin alimentación eléctrica",
+          "alarm_pressure_sensor_faulty": "¡Sensor de presión defectuoso!",
+          "alarm_pressure_too_high": "Presión de entrada demasiado alta",
+          "alarm_pressure_too_low": "Presión de entrada demasiado baja",
+          "alarm_safefloor_communication": "Fallo de conexión de red",
+          "alarm_safefloor_flood": "Se detectó una fuga en el sensor de suelo",
+          "alarm_safefloor_high_humidity": "Umbral de humedad alta superado",
+          "alarm_safefloor_high_temperature": "Umbral de temperatura alta superado",
+          "alarm_safefloor_low_humidity": "Umbral de humedad baja superado",
+          "alarm_safefloor_low_temperature": "Umbral de temperatura baja superado",
+          "alarm_safefloor_weather": "Fallo del sensor de temperatura y humedad",
+          "alarm_safet_absence_leakage_detected": "Fuga de ausencia detectada. Volumen superado",
+          "alarm_safet_flow_leakage_detected": "Fuga de flujo detectada: caudal > 3500 l/h",
+          "alarm_safet_flow_time_exceeded": "Criterio de tiempo de flujo superado",
+          "alarm_safet_leakage_volume_reached": "Fuga de presencia detectada. Volumen superado",
+          "alarm_safet_microleakage_detected": "Microfuga detectada. Valor límite superado",
+          "alarm_safet_turbine_no_signal": "Sin señal de turbina",
+          "alarm_safet_valve_cannot_be_operated": "La válvula no puede ser accionada",
+          "alarm_salt_supply_empty": "Reserva de sal vacía",
+          "alarm_salt_supply_low": "Reserva de sal baja",
+          "alarm_target_pressure_unreachable": "¡No se puede alcanzar la presión objetivo!",
+          "alarm_temperature_sensor_faulty": "¡Sensor de temperatura defectuoso!",
+          "alarm_turbine_blocked": "¡Turbina bloqueada!",
+          "alarm_valve_malfunction": "Defecto del mecanismo de la válvula",
+          "alarm_valve_position": "Posición de la válvula",
+          "error_no_information": "Error: no hay información disponible",
+          "fault_conductance_sensor": "¡Sensor de conductividad defectuoso!",
+          "no_alarm": "Sin alarma"
         }
       },
       "getaln": {
@@ -529,7 +669,7 @@
         "name": "Tiempo de espera del punto de acceso"
       },
       "getavo": {
-        "name": "Flujo actual"
+        "name": "Caudal actual"
       },
       "getbap": {
         "name": "Nivel de batería"
@@ -543,11 +683,11 @@
       "getbat": {
         "name": "Tensión de batería"
       },
-      "getcde": {
-        "name": "Código de configuración"
-      },
       "getcel": {
         "name": "Temperatura"
+      },
+      "getcfo": {
+        "name": "Desplazamiento del caudal del ciclo"
       },
       "getcft": {
         "name": "Duración actual del llenado"
@@ -561,8 +701,19 @@
       "getcnd": {
         "name": "Conductividad"
       },
-      "getcno": {
-        "name": "Número de código"
+      "getcnd_class": {
+        "name": "Rango de dureza del agua",
+        "state": {
+          "hard": "Dura",
+          "medium": "Media",
+          "soft": "Blanda"
+        }
+      },
+      "getcnf": {
+        "name": "Factor de conductividad"
+      },
+      "getcnl": {
+        "name": "Límite de conductividad"
       },
       "getcoa": {
         "name": "Contador de retrolavados automáticos"
@@ -586,25 +737,31 @@
         }
       },
       "getcs1": {
-        "name": "Capacidad restante de la resina 1"
+        "name": "Capacidad restante de la resina en el depósito 1"
       },
       "getcs2": {
-        "name": "Capacidad restante de la resina 2"
+        "name": "Capacidad restante de la resina en el depósito 2"
       },
       "getcs3": {
-        "name": "Capacidad restante de la resina 3"
+        "name": "Capacidad restante de la resina en el depósito 3"
+      },
+      "getcwl": {
+        "name": "Umbral de advertencia de capacidad restante"
       },
       "getcyn": {
-        "name": "Contador de ciclos"
+        "name": "Contador de ciclos de regeneración"
       },
       "getcyt": {
-        "name": "Tiempo de ciclo"
+        "name": "Tiempo restante del ciclo de regeneración"
       },
       "getdbd": {
         "name": "Caída de presión en prueba de fugas"
       },
-      "getden": {
-        "name": "Dispositivo activado"
+      "getdbt": {
+        "name": "Tiempo de caída de presión de la prueba de microfugas"
+      },
+      "getdcm": {
+        "name": "Tiempo de válvula cerrada de la prueba de microfugas"
       },
       "getdfm": {
         "name": "Funciones del dispositivo",
@@ -622,26 +779,40 @@
       "getdma": {
         "name": "Modo de alarma de microfugas",
         "state": {
+          "0": "Desactivado",
           "1": "Advertencia",
           "2": "Alarma"
         }
       },
+      "getdom": {
+        "name": "Tiempo de válvula abierta de la prueba de microfugas"
+      },
+      "getdpl": {
+        "name": "Impulsos de turbina de la prueba de microfugas"
+      },
       "getdrp": {
         "name": "Intervalo de prueba de microfugas",
         "state": {
+          "0": "Siempre",
           "1": "Diario",
           "2": "Semanal",
           "3": "Mensual"
         }
+      },
+      "getdst": {
+        "name": "Tiempo de espera sin caudal de la prueba de microfugas"
       },
       "getdsv": {
         "name": "Prueba de microfugas",
         "state": {
           "0": "Inactivo",
           "1": "Activo",
-          "2": "Cancelado - pérdida de presión",
+          "2": "Cancelado (pérdida de presión)",
           "3": "Omitido"
         }
+      },
+      "getdtc": {
+        "name": "Ciclos de verificación de la prueba de microfugas"
       },
       "getdtt": {
         "name": "Tiempo de prueba de microfugas"
@@ -675,6 +846,9 @@
       "getfco": {
         "name": "Contenido de hierro"
       },
+      "getfcs": {
+        "name": "Tamaño del cartucho (personalizado)"
+      },
       "getffm": {
         "name": "Tipo de filtro",
         "state": {
@@ -689,6 +863,12 @@
       },
       "getflo": {
         "name": "Caudal de agua"
+      },
+      "getfmt": {
+        "name": "Duración máxima de llenado (llenado inicial)"
+      },
+      "getfvt": {
+        "name": "Volumen máximo de llenado (llenado inicial)"
       },
       "gethmd": {
         "name": "Humedad"
@@ -714,7 +894,7 @@
         "name": "Última regeneración"
       },
       "getle": {
-        "name": "Protección contra fugas - Nivel presente"
+        "name": "Nivel de protección contra fugas (presente)"
       },
       "getlft": {
         "name": "Duración del último rellenado"
@@ -726,7 +906,10 @@
         "name": "Idioma del dispositivo",
         "state": {
           "0": "Alemán",
-          "1": "Inglés"
+          "1": "Inglés",
+          "2": "Español",
+          "3": "Italiano",
+          "4": "Polaco"
         }
       },
       "getlot": {
@@ -737,6 +920,9 @@
       },
       "getltv": {
         "name": "Último volumen dispensado"
+      },
+      "getlwt": {
+        "name": "Umbral de aviso de fuga"
       },
       "getmac": {
         "name": "Dirección MAC"
@@ -778,12 +964,12 @@
         "name": "Notificación",
         "state": {
           "annual_maintenance": "Mantenimiento anual",
-          "backwash_reminder_pressure": "Recordatorio de contralavado por presión",
+          "backwash_reminder_pressure": "Recordatorio de retrolavado por presión",
           "bi_annual_maintenance": "Mantenimiento semestral",
           "filter_maintenance_reminder": "Recordatorio de mantenimiento del filtro",
           "filter_service_reminder": "Recordatorio de servicio del filtro",
-          "new_software_available": "Nueva actualización de software disponible!",
-          "new_software_installed": "Nueva actualización de software instalada!",
+          "new_software_available": "¡Nueva actualización de software disponible!",
+          "new_software_installed": "¡Nueva actualización de software instalada!",
           "no_notification": "Ninguna"
         }
       },
@@ -859,56 +1045,56 @@
         }
       },
       "getpb1": {
-        "name": "Zumbador perfil 1",
+        "name": "Zumbador (perfil 1)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpb2": {
-        "name": "Zumbador perfil 2",
+        "name": "Zumbador (perfil 2)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpb3": {
-        "name": "Zumbador perfil 3",
+        "name": "Zumbador (perfil 3)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpb4": {
-        "name": "Zumbador perfil 4",
+        "name": "Zumbador (perfil 4)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpb5": {
-        "name": "Zumbador perfil 5",
+        "name": "Zumbador (perfil 5)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpb6": {
-        "name": "Zumbador perfil 6",
+        "name": "Zumbador (perfil 6)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpb7": {
-        "name": "Zumbador perfil 7",
+        "name": "Zumbador (perfil 7)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpb8": {
-        "name": "Zumbador perfil 8",
+        "name": "Zumbador (perfil 8)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
@@ -939,56 +1125,56 @@
         "name": "Umbral de fuga de caudal 8"
       },
       "getpm1": {
-        "name": "Prueba de microfugas perfil 1",
+        "name": "Prueba de microfugas (perfil 1)",
         "state": {
           "false": "Inactivo",
           "true": "Activo"
         }
       },
       "getpm2": {
-        "name": "Prueba de microfugas perfil 2",
+        "name": "Prueba de microfugas (perfil 2)",
         "state": {
           "false": "Inactivo",
           "true": "Activo"
         }
       },
       "getpm3": {
-        "name": "Prueba de microfugas perfil 3",
+        "name": "Prueba de microfugas (perfil 3)",
         "state": {
           "false": "Inactivo",
           "true": "Activo"
         }
       },
       "getpm4": {
-        "name": "Prueba de microfugas perfil 4",
+        "name": "Prueba de microfugas (perfil 4)",
         "state": {
           "false": "Inactivo",
           "true": "Activo"
         }
       },
       "getpm5": {
-        "name": "Prueba de microfugas perfil 5",
+        "name": "Prueba de microfugas (perfil 5)",
         "state": {
           "false": "Inactivo",
           "true": "Activo"
         }
       },
       "getpm6": {
-        "name": "Prueba de microfugas perfil 6",
+        "name": "Prueba de microfugas (perfil 6)",
         "state": {
           "false": "Inactivo",
           "true": "Activo"
         }
       },
       "getpm7": {
-        "name": "Prueba de microfugas perfil 7",
+        "name": "Prueba de microfugas (perfil 7)",
         "state": {
           "false": "Inactivo",
           "true": "Activo"
         }
       },
       "getpm8": {
-        "name": "Prueba de microfugas perfil 8",
+        "name": "Prueba de microfugas (perfil 8)",
         "state": {
           "false": "Inactivo",
           "true": "Activo"
@@ -1019,28 +1205,28 @@
         "name": "Nombre del perfil de protección contra fugas 8"
       },
       "getpr1": {
-        "name": "Tiempo de retorno al perfil activo 1"
+        "name": "Tiempo de retorno al perfil Presente (perfil 1)"
       },
       "getpr2": {
-        "name": "Tiempo de retorno al perfil activo 2"
+        "name": "Tiempo de retorno al perfil Presente (perfil 2)"
       },
       "getpr3": {
-        "name": "Tiempo de retorno al perfil activo 3"
+        "name": "Tiempo de retorno al perfil Presente (perfil 3)"
       },
       "getpr4": {
-        "name": "Tiempo de retorno al perfil activo 4"
+        "name": "Tiempo de retorno al perfil Presente (perfil 4)"
       },
       "getpr5": {
-        "name": "Tiempo de retorno al perfil activo 5"
+        "name": "Tiempo de retorno al perfil Presente (perfil 5)"
       },
       "getpr6": {
-        "name": "Tiempo de retorno al perfil activo 6"
+        "name": "Tiempo de retorno al perfil Presente (perfil 6)"
       },
       "getpr7": {
-        "name": "Tiempo de retorno al perfil activo 7"
+        "name": "Tiempo de retorno al perfil Presente (perfil 7)"
       },
       "getpr8": {
-        "name": "Tiempo de retorno al perfil activo 8"
+        "name": "Tiempo de retorno al perfil Presente (perfil 8)"
       },
       "getprc": {
         "name": "Nivel de capacidad restante"
@@ -1051,6 +1237,9 @@
           "1": "Presente",
           "2": "Ausente"
         }
+      },
+      "getprn": {
+        "name": "Número de perfiles de protección contra fugas"
       },
       "getprs": {
         "name": "Presión"
@@ -1111,56 +1300,56 @@
         "name": "Umbral de fuga de volumen 8"
       },
       "getpw1": {
-        "name": "Alerta de fuga perfil 1",
+        "name": "Alerta de fuga (perfil 1)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpw2": {
-        "name": "Alerta de fuga perfil 2",
+        "name": "Alerta de fuga (perfil 2)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpw3": {
-        "name": "Alerta de fuga perfil 3",
+        "name": "Alerta de fuga (perfil 3)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpw4": {
-        "name": "Alerta de fuga perfil 4",
+        "name": "Alerta de fuga (perfil 4)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpw5": {
-        "name": "Alerta de fuga perfil 5",
+        "name": "Alerta de fuga (perfil 5)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpw6": {
-        "name": "Alerta de fuga perfil 6",
+        "name": "Alerta de fuga (perfil 6)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpw7": {
-        "name": "Alerta de fuga perfil 7",
+        "name": "Alerta de fuga (perfil 7)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
         }
       },
       "getpw8": {
-        "name": "Alerta de fuga perfil 8",
+        "name": "Alerta de fuga (perfil 8)",
         "state": {
           "false": "Desactivado",
           "true": "Activado"
@@ -1189,10 +1378,10 @@
         "name": "Dosificación de sal"
       },
       "getre1": {
-        "name": "Capacidad de reserva del frasco 1"
+        "name": "Capacidad de reserva en el frasco 1"
       },
       "getre2": {
-        "name": "Capacidad de reserva del frasco 2"
+        "name": "Capacidad de reserva en el frasco 2"
       },
       "getres": {
         "name": "Capacidad restante"
@@ -1201,19 +1390,19 @@
         "name": "Estado de regeneración",
         "state": {
           "0": "Sin regeneración",
-          "1": "Depósito 1 regenerado",
-          "2": "Depósito 2 regenerado"
+          "1": "Regeneración en el depósito 1",
+          "2": "Regeneración en el depósito 2"
         }
       },
       "getrg2": {
-        "name": "Depósito de regeneración 2",
+        "name": "Regeneración en el depósito 2",
         "state": {
           "0": "Inactivo",
           "1": "En funcionamiento"
         }
       },
       "getrg3": {
-        "name": "Depósito de regeneración 3",
+        "name": "Regeneración en el depósito 3",
         "state": {
           "0": "Inactivo",
           "1": "En funcionamiento"
@@ -1252,9 +1441,6 @@
       "getrse": {
         "name": "Intervalo de recordatorio de retrolavado"
       },
-      "getrth": {
-        "name": "Hora de regeneración (Hora)"
-      },
       "getrti": {
         "name": "Duración total del ciclo de regeneración"
       },
@@ -1262,7 +1448,7 @@
         "name": "Hora de regeneración"
       },
       "getrvt": {
-        "name": "Carga máxima de llenado"
+        "name": "Volumen máximo de llenado"
       },
       "getscr": {
         "name": "Ciclos de regeneración de servicio"
@@ -1280,6 +1466,9 @@
       "getslf": {
         "name": "Flujo en fase de autoaprendizaje"
       },
+      "getslo": {
+        "name": "Margen en fase de autoaprendizaje (volumen y tiempo)"
+      },
       "getslp": {
         "name": "Duración de la fase de autoaprendizaje"
       },
@@ -1288,6 +1477,12 @@
       },
       "getslv": {
         "name": "Volumen en fase de autoaprendizaje"
+      },
+      "getsmf": {
+        "name": "Flujo mínimo en fase de autoaprendizaje"
+      },
+      "getsof": {
+        "name": "Margen en fase de autoaprendizaje (flujo)"
       },
       "getsre": {
         "name": "Regeneración activa",
@@ -1315,13 +1510,13 @@
         "name": "Próximo mantenimiento anual"
       },
       "getss1": {
-        "name": "Reserva de sal depósito 1"
+        "name": "Reserva de sal en el depósito 1"
       },
       "getss2": {
-        "name": "Reserva de sal depósito 2"
+        "name": "Reserva de sal en el depósito 2"
       },
       "getss3": {
-        "name": "Reserva de sal depósito 3"
+        "name": "Reserva de sal en el depósito 3"
       },
       "getsta": {
         "name": "Estado",
@@ -1340,22 +1535,25 @@
         }
       },
       "getsv1": {
-        "name": "Cantidad de sal depósito 1"
+        "name": "Cantidad de sal en el depósito 1"
       },
       "getsv2": {
-        "name": "Cantidad de sal depósito 2"
+        "name": "Cantidad de sal en el depósito 2"
       },
       "getsv3": {
-        "name": "Cantidad de sal depósito 3"
+        "name": "Cantidad de sal en el depósito 3"
       },
       "gett1": {
         "name": "Fuga de tiempo 1"
       },
       "gett2": {
-        "name": "Fuga de tiempo 2"
+        "name": "Tiempo máximo de fuga de caudal"
       },
       "gettmp": {
         "name": "Protección contra fugas desactivada"
+      },
+      "gettmz": {
+        "name": "Zona horaria"
       },
       "gettor": {
         "name": "Regeneraciones (total)"
@@ -1369,11 +1567,14 @@
       "gettrv": {
         "name": "Volumen total rellenado"
       },
+      "getttm": {
+        "name": "Tiempo máximo sin impulsos de turbina"
+      },
       "gettyp": {
         "name": "Tipo de dispositivo"
       },
       "getul": {
-        "name": "Protección contra fugas - Nivel ausente"
+        "name": "Nivel de protección contra fugas (ausente)"
       },
       "getver": {
         "name": "Versión de firmware"
@@ -1384,17 +1585,18 @@
           "10": "Cerrada",
           "11": "Cerrando",
           "20": "Abierta",
-          "21": "Abriendo"
+          "21": "Abriendo",
+          "30": "Fuga de ausencia"
         }
       },
       "getvol": {
         "name": "Volumen total"
       },
       "getvps1": {
-        "name": "Sin pulsos de turbina en cabeza de control 1 desde"
+        "name": "Sin impulsos de turbina en el cabezal de control 1 desde"
       },
       "getvps2": {
-        "name": "Sin pulsos de turbina en cabeza de control 2 desde"
+        "name": "Sin impulsos de turbina en el cabezal de control 2 desde"
       },
       "getvs1": {
         "name": "Umbral de volumen 1"
@@ -1407,9 +1609,6 @@
       },
       "getwfc": {
         "name": "SSID WLAN"
-      },
-      "getwfl": {
-        "name": "Redes disponibles"
       },
       "getwfr": {
         "name": "Intensidad de la señal WLAN"
@@ -1453,6 +1652,13 @@
       }
     },
     "switch": {
+      "getbpb": {
+        "name": "Permitir cambio de perfil en el dispositivo",
+        "state": {
+          "false": "Desactivado",
+          "true": "Activado"
+        }
+      },
       "getbuz": {
         "name": "Zumbador en alarma",
         "state": {
@@ -1466,6 +1672,12 @@
           "false": "Desactivado",
           "true": "Activado"
         }
+      },
+      "getifl": {
+        "name": "Llenado inicial"
+      },
+      "getmfl": {
+        "name": "Llenado manual"
       },
       "getssa": {
         "name": "Retrolavado automático",
@@ -1494,22 +1706,69 @@
           "false": "Abierta",
           "true": "Cerrada"
         }
-      },
-      "getvlv": {
-        "name": "Estado de la válvula",
-        "state": {
-          "10": "Cerrada",
-          "11": "Cerrando",
-          "20": "Abierta",
-          "21": "Abriendo"
-        }
       }
     }
   },
-  "issues": {
-    "device_offline": {
-      "description": "El dispositivo SYR Connect \"{device_name}\" está actualmente sin conexión y no se puede contactar. Por favor, verifique:\n\n- La alimentación eléctrica del dispositivo\n- La conexión de red\n- El estado del servicio en la nube de SYR Connect\n\nEl dispositivo se reconectará automáticamente cuando vuelva a estar en línea.",
-      "title": "Dispositivo sin conexión: {device_name}"
+  "exceptions": {
+    "auth_failed": {
+      "message": "Error de autenticación con SYR Connect. Deben introducirse de nuevo las credenciales"
+    },
+    "button_press_failed": {
+      "message": "No se pudo ejecutar {entity} en el dispositivo {device}"
+    },
+    "coordinator_data_unavailable": {
+      "message": "Todavía no hay datos del dispositivo. La acción puede repetirse más tarde"
+    },
+    "device_not_found": {
+      "message": "El dispositivo ya no está disponible en SYR Connect"
+    },
+    "firmware_update_failed": {
+      "message": "No se pudo iniciar la actualización del firmware del dispositivo {device}"
+    },
+    "invalid_option": {
+      "message": "{option} no es una opción válida para {entity}"
+    },
+    "microleakage_test_running": {
+      "message": "Ya se está ejecutando una prueba de microfugas en el dispositivo {device}"
+    },
+    "migration_cannot_connect": {
+      "message": "No se puede acceder al dispositivo {device} para detectar su modelo"
+    },
+    "migration_model_not_detected": {
+      "message": "No se puede detectar el modelo del dispositivo {device}. Se debe eliminar la entrada y volver a configurar el dispositivo"
+    },
+    "no_alarm_to_reset": {
+      "message": "El dispositivo {device} no tiene ninguna alarma activa que restablecer"
+    },
+    "no_notification_to_reset": {
+      "message": "El dispositivo {device} no tiene ningún aviso activo que restablecer"
+    },
+    "no_warning_to_reset": {
+      "message": "El dispositivo {device} no tiene ninguna advertencia activa que restablecer"
+    },
+    "option_not_selectable": {
+      "message": "{option} no se puede seleccionar para {entity}"
+    },
+    "set_value_failed": {
+      "message": "No se pudo establecer {entity} en el dispositivo {device}"
+    },
+    "setup_cannot_connect": {
+      "message": "No se puede conectar con SYR Connect"
+    },
+    "update_connection_error": {
+      "message": "Falló la conexión con SYR Connect"
+    },
+    "update_failed": {
+      "message": "Error al comunicarse con SYR Connect"
+    },
+    "valve_close_failed": {
+      "message": "No se pudo cerrar la válvula del dispositivo {device}"
+    },
+    "valve_open_failed": {
+      "message": "No se pudo abrir la válvula del dispositivo {device}"
+    },
+    "valve_unknown_format": {
+      "message": "La válvula del dispositivo {device} no se puede accionar porque su estado es desconocido"
     }
   },
   "options": {
@@ -1517,6 +1776,9 @@
       "init": {
         "data": {
           "scan_interval": "Intervalo de actualización"
+        },
+        "data_description": {
+          "scan_interval": "Indica cuántos segundos pasan entre dos actualizaciones. Para la nube son posibles al menos 60 segundos y para los dispositivos locales al menos 10 segundos, en ambos casos como máximo 600 segundos."
         },
         "description": "Define el intervalo de tiempo entre llamadas a la API.",
         "title": "Opciones de SYR Connect"

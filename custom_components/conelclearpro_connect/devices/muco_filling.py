@@ -1,10 +1,11 @@
-"""Entity allowlist override for the muco_filling model (e.g. Conel Clear Pro
-Fill, AC 3228 Connect - getDFM=3, filling-controller role).
+"""Entity allowlist override for the muco_filling model.
+
+For example Conel Clear Pro Fill, AC 3228 Connect (getDFM=3), filling-controller role.
 
 Model type: Filling the Heating System
 
 This is a POSITIVE list: only keys confirmed to be meaningful for this model
-are listed, unlike the shared global allowlists in const.py which have to
+are listed, unlike the shared global allowlists of the platforms which have to
 cover every supported model at once.
 
 Deliberately NOT included, pending confirmation on a real device:
@@ -14,15 +15,15 @@ Deliberately NOT included, pending confirmation on a real device:
   available) for the AC 3228 Connect variant sharing this file, which takes
   precedence over a fixture reading from a different product (Conel Clear
   Pro Fill).
-- getMIH, getMXH, getMIT, getMXT: labeled "(SafeFloor)" in const.py -
+- getMIH, getMXH, getMIT, getMXT: labeled "(SafeFloor)" in sensor.py -
   a different product (humidity/flood sensor), unrelated to a filling
   controller.
 - getDBD, getDMA, getDRP, getDSV, getDTT: labeled "(Trio DFR/LS, SafeTech)"
-  microleakage-test feature in const.py - a different product family.
+  microleakage-test feature in sensor.py - a different product family.
 - getSLE, getSLF, getSLP, getSLT, getSLV: labeled "(Trio DFR/LS)"
-  self-learning-phase feature in const.py; also reported as constant 0 stub
+  self-learning-phase feature in sensor.py; also reported as constant 0 stub
   values in the fixture.
-- getSRV: labeled "(Trio DFR/LS)" in const.py and empty ("") in the fixture.
+- getSRV: labeled "(Trio DFR/LS)" in sensor.py and empty ("") in the fixture.
 - getPA1-8, getPB1-8, getPF1-8, getPM1-8, getPN1-8, getPR1-8, getPT1-8,
   getPV1-8, getPW1-8, getPRF: leak-protection profiles (LEXplus10SL feature),
   not applicable to this filling controller.
@@ -33,24 +34,39 @@ Deliberately NOT included, pending confirmation on a real device:
   matrix.
 
 If real-device testing shows any of the above (or other) keys are actually
-used, move them into SENSOR_KNOWN_KEYS below.
+used, move them into SENSOR_SUPPORTED_KEYS below.
 """
 
-SENSOR_KNOWN_KEYS = {
+from . import WHU_UNITS_MUCO, SyrConnectDeviceProfile
+
+SENSOR_SUPPORTED_KEYS = {
     # --- Connectivity ---
     "dst",
     # --- Valve & Flow ---
-    "getFLO", "getVLV",
+    "getFLO",
+    "getVLV",
     # --- Alarm / Notification / Warning ---
-    "getALA", "getALM", "getALN", "getALW", "getNOT", "getWRN",
+    "getALA",
+    "getALM",
+    "getALN",
+    "getALW",
+    "getNOT",
+    "getWRN",
     # --- Pressure ---
-    "getBAR", "getBAR2",
+    "getBAR",
+    "getBAR2",
     # --- Voltage / Battery ---
-    "getBAP", "getBAT", "getNET",
+    "getBAP",
+    "getBAT",
+    "getNET",
     # --- Alarm Duration ---
     "getALD",
     # --- Water Quality ---
-    "getCND", "getIWH", "getOHW", "getWHU",
+    "getCND",
+    "getCNF",
+    "getIWH",
+    "getOHW",
+    "getWHU",
     # --- Device Status ---
     "getDFM",
     # --- Filter ---
@@ -58,39 +74,117 @@ SENSOR_KNOWN_KEYS = {
     # --- Display ---
     "getSRO",
     # --- Device Info & Diagnostics ---
-    "getEGW", "getEIP", "getLNG", "getMAC1", "getMAC2", "getSRN", "getVER",
+    "getEGW",
+    "getEIP",
+    "getLNG",
+    "getMAC1",
+    "getMAC2",
+    "getSRN",
+    "getTMZ",
+    "getVER",
     # --- Wi-Fi ---
-    "getAPT", "getWFC", "getWFR", "getWFS", "getWGW", "getWIP",
+    "getAPT",
+    "getWFC",
+    "getWFR",
+    "getWFS",
+    "getWGW",
+    "getWIP",
     # --- Water treatment / Filling ---
-    "getCRS", "getCRT", "getLOT", "getLRC", "getPRC", "getRCC", "getRCD", "getRCN", "getRMN", "getRMT",
-    "getRVT", "getTPR",
+    "getCRS",
+    "getCRT",
+    "getLOT",
+    "getLRC",
+    "getPRC",
+    "getRCC",
+    "getRCD",
+    "getRCN",
+    "getRMN",
+    "getRMT",
+    "getRVT",
+    "getTPR",
     # --- Lock / Connection Centre ---
-    "getCFT", "getCFV", "getLFT", "getLFV", "getNRT", "getTRT", "getTRV",
+    "getCFT",
+    "getCFV",
+    "getLFT",
+    "getLFV",
+    "getNRT",
+    "getTRT",
+    "getTRV",
 }
 
 # getRTM, getPRF, getSV1-3, getRPD, getRMO deliberately excluded: this is a filling
 # controller with no regeneration/resin/salt containers and no leak-protection profiles.
-SELECT_KNOWN_KEYS = {
-    "getSRO", "getFFM",
-    "getCRS", "getCRT", "getLOT", "getOHW", "getRCD", "getRMN", "getRMT", "getRVT", "getTPR",
+SELECT_SUPPORTED_KEYS = {
+    "getSRO",
+    "getFFM",
+    "getCRS",
+    "getCRT",
+    "getIWH",
+    "getLOT",
+    "getOHW",
+    "getRCD",
+    "getRMN",
+    "getRMT",
+    "getRVT",
+    "getTPR",
 }
 
-SWITCH_KNOWN_KEYS = {
-    "getBUZ", "getDFI",
-}
-
-BINARY_SENSOR_KNOWN_KEYS = {
+SWITCH_SUPPORTED_KEYS = {
     "getBUZ",
+    "getDFI",
+}
+
+BINARY_SENSOR_SUPPORTED_KEYS = {
+    "getBUZ",
+    "getIDS",
+    "getSFV",
 }
 
 # setSIR (no regeneration) and setDEX (Trio DFR/LS microleakage test, not applicable
 # despite getDSV being present in the fixture) deliberately excluded.
-BUTTON_KNOWN_KEYS = {
-    "setALA", "setNOT", "setWRN",
+BUTTON_SUPPORTED_KEYS = {
+    "setALA",
+    "setNOT",
+    "setWRN",
 }
 
 # getAB (valve shutoff control) deliberately excluded on request; getVLV (read-only
 # valve position, handled by the sensor platform) is unaffected.
-VALVE_KNOWN_KEYS: set[str] = set()
+VALVE_SUPPORTED_KEYS: set[str] = set()
 
 
+# Water hardness ranges per unit: getWHU code -> (lowest, highest, step) in that unit.
+# The device keeps both values in °dH (hardness_in_dh), getWHU is only the unit of the
+# display. The soft water hardness (getOHW) can be at most the raw water hardness (getIWH).
+HARDNESS_RANGES = {
+    "getIWH": {
+        0: (1, 50, 1),  # °dH
+        1: (1, 65, 1),  # °e
+        2: (1, 90, 1),  # °fH
+        3: (10, 900, 10),  # ppm
+    },
+    "getOHW": {
+        0: (0, 12, 1),  # °dH
+        1: (0, 16, 1),  # °e
+        2: (0, 22, 1),  # °fH
+        3: (0, 220, 10),  # ppm
+    },
+}
+
+
+PROFILE = SyrConnectDeviceProfile(
+    binary_sensor=BINARY_SENSOR_SUPPORTED_KEYS,
+    button=BUTTON_SUPPORTED_KEYS,
+    cartridge_keys={
+        "0": "getOHW",
+        "1": "getLOT",
+        "2": "getLOT",
+    },
+    hardness_in_dh=True,
+    hardness_ranges=HARDNESS_RANGES,
+    select=SELECT_SUPPORTED_KEYS,
+    sensor=SENSOR_SUPPORTED_KEYS,
+    switch=SWITCH_SUPPORTED_KEYS,
+    valve=VALVE_SUPPORTED_KEYS,
+    whu_units=WHU_UNITS_MUCO,
+)

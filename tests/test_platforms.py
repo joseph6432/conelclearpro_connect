@@ -1,26 +1,30 @@
 """Platform smoke tests for SYR Connect."""
-from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.syr_connect.binary_sensor import async_setup_entry as async_setup_binary_sensor
-from custom_components.syr_connect.button import async_setup_entry as async_setup_button
-from custom_components.syr_connect.coordinator import SyrConnectDataUpdateCoordinator
-from custom_components.syr_connect.select import (
+from custom_components.conelclearpro_connect.binary_sensor import (
+    async_setup_entry as async_setup_binary_sensor,
+)
+from custom_components.conelclearpro_connect.button import async_setup_entry as async_setup_button
+from custom_components.conelclearpro_connect.const import CONF_SERVICE
+from custom_components.conelclearpro_connect.coordinator import SyrConnectDataUpdateCoordinator
+from custom_components.conelclearpro_connect.select import (
     SyrConnectNumericSelect,
     SyrConnectRegenerationSelect,
-)
-from custom_components.syr_connect.select import (
     async_setup_entry as async_setup_select,
 )
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import HomeAssistant
 
 
-def _build_coordinator(hass: HomeAssistant, data: dict) -> SyrConnectDataUpdateCoordinator:
+def _build_coordinator(
+    hass: HomeAssistant, data: dict
+) -> SyrConnectDataUpdateCoordinator:
     config_data = {
+        CONF_SERVICE: "de.consoft.syr.connect",
         CONF_USERNAME: "test@example.com",
         CONF_PASSWORD: "password",
     }
@@ -30,13 +34,13 @@ def _build_coordinator(hass: HomeAssistant, data: dict) -> SyrConnectDataUpdateC
         config_data,
         60,
     )
-    coordinator.async_set_updated_data(data)
+    coordinator.async_set_updated_data(cast(Any, data))
     coordinator.last_update_success = True
     return coordinator
 
 
 def _build_entry(coordinator: SyrConnectDataUpdateCoordinator) -> MockConfigEntry:
-    entry = MockConfigEntry(domain="syr_connect", data={})
+    entry = MockConfigEntry(domain="conelclearpro_connect", data={})
     entry.runtime_data = coordinator
     return entry
 
