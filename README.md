@@ -8,7 +8,7 @@ Many thanks for his afford!
 
 <img src="custom_components/conelclearpro_connect/brand/logo.png" alt="ConelClearPro" width="200">
 
-# SYR Connect - Home Assistant Integration
+# ConelClearPro Connect Plugin - Home Assistant Integration
 
 [![GitHub Release](https://img.shields.io/github/release/joseph6432/conelclearpro_connect.svg?style=flat)](https://github.com/joseph6432/conelclearpro_connect/releases)
 [![syr_connect installs](https://img.shields.io/badge/dynamic/json?logo=home-assistant&logoColor=ccc&label=usage&suffix=%20installs&cacheSeconds=15600&url=https://analytics.home-assistant.io/custom_integrations.json&query=$.syr_connect.total)](https://my.home-assistant.io/redirect/config_flow_start/?domain=conelclearpro_connect)
