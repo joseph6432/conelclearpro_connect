@@ -2,7 +2,7 @@
 This is a modified fork of SYR Connect by Alexander Hass
 (https://github.com/alexhass/syr_connect).
 Modifications: renamed to conelclearpro_connect, changed branding/icons.
-Many thanks for his afford!
+Many thanks for his effort!
 
 
 
